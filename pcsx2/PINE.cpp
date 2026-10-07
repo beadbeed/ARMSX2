@@ -12,6 +12,7 @@
 #include "PerformanceMetrics.h"
 #include "SaveState.h"
 #include "PINE.h"
+#include "SIO/Pad/Pad.h"
 #include "VMManager.h"
 #include "vtlb.h"
 #include "common/Error.h"
@@ -21,7 +22,9 @@
 #include "common/SettingsWrapper.h"
 #include "common/Threading.h"
 
+#include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <span>
@@ -218,6 +221,7 @@ namespace PINEServer
 		MsgFrameAdvance = 0x13, /**< Advances a paused VM by one frame. */
 		MsgGSDump = 0x14, /**< Records a GS dump of the next N frames. */
 		MsgGetEffectiveSetting = 0x15, /**< Reads what a setting is actually running as. */
+		MsgPadSet = 0x30, /**< Sets one controller input (button or stick direction) to a 0..1 value. */
 
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
@@ -1022,6 +1026,23 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				const u32 a = FromSpan<u32>(buf, buf_cnt);
 				vtlb_ramWrite<mem64_t>(a, FromSpan<u64>(buf, buf_cnt + 4));
 				buf_cnt += 12;
+				break;
+			}
+			case MsgPadSet:
+			{
+				// [u8 controller][u8 bind][f32 value]. Lets a script drive the game without the
+				// host's keyboard, e.g. from a remote session. Bind indices follow the pad type's
+				// Inputs enum (PadDualshock2: 0 = Up ... 5 = Circle, 6 = Cross ... 18-21 = left stick).
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + 1 + 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+				const u32 controller = FromSpan<u8>(buf, buf_cnt);
+				const u32 bind = FromSpan<u8>(buf, buf_cnt + 1);
+				const float value = std::clamp(std::bit_cast<float>(FromSpan<u32>(buf, buf_cnt + 2)), 0.0f, 1.0f);
+				buf_cnt += 6;
+				// Pad state belongs to the CPU thread, like every other input source's updates.
+				Host::RunOnCPUThread([controller, bind, value]() { Pad::SetControllerState(controller, bind, value); });
 				break;
 			}
 			case MsgVersion:
