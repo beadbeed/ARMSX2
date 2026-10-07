@@ -1,0 +1,25 @@
+# Outbreak VR: build the Steam Frame target (Linux arm64 AppImage) for the VR
+# branch only. build-all.yml runs on master and covers every platform; this keeps
+# CI time to the one artifact the headset needs.
+name: Outbreak VR (Steam Frame build)
+
+on:
+  push:
+    branches: [outbreak-vr]
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: outbreak-vr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frame-linux-arm64:
+    uses: ./.github/workflows/linux_build_qt.yml
+    with:
+      jobName: "Steam Frame (Linux arm64, 4K pages)"
+      artifactPrefixName: "outbreak-vr-linux-arm64-appimage"
+      compiler: clang
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DENABLE_VR_STEREO=ON"
+      buildAppImage: true
