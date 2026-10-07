@@ -8,12 +8,28 @@
 #include "common/SettingsInterface.h"
 
 #include <atomic>
+#include <string>
 
 namespace VR::StereoSettings
 {
 	namespace
 	{
 		std::atomic_bool s_interleave{false};
+		std::atomic_bool s_per_eye{false};
+		std::atomic<DebugView> s_debug_view{DebugView::Off};
+
+		DebugView ParseDebugView(const std::string& v)
+		{
+			if (v == "SBS")
+				return DebugView::SBS;
+			if (v == "CrossEye")
+				return DebugView::CrossEye;
+			if (v == "Left")
+				return DebugView::Left;
+			if (v == "Right")
+				return DebugView::Right;
+			return DebugView::Off;
+		}
 	}
 
 	void Apply(const SettingsInterface& si)
@@ -27,7 +43,10 @@ namespace VR::StereoSettings
 		p.collimate_disparity = si.GetFloatValue("VR", "CollimateDisparity", 0.0f);
 		StereoState::Publish(p);
 
+		s_debug_view.store(ParseDebugView(si.GetStringValue("VR", "DebugView", "Off")), std::memory_order_relaxed);
+
 		const bool interleave = p.enabled && si.GetBoolValue("VR", "InterleaveEyes", false);
+		s_per_eye.store(p.enabled && !interleave, std::memory_order_relaxed);
 		if (interleave != s_interleave.exchange(interleave) || p.enabled)
 		{
 			Console.WriteLn("(VR) Stereo %s: separation %.4f, convergence %.4g, z-driven %s%s", p.enabled ? "on" : "off",
@@ -38,5 +57,15 @@ namespace VR::StereoSettings
 	bool InterleaveEyes()
 	{
 		return s_interleave.load(std::memory_order_relaxed);
+	}
+
+	bool PerEyeTargets()
+	{
+		return s_per_eye.load(std::memory_order_relaxed);
+	}
+
+	DebugView GetDebugView()
+	{
+		return s_debug_view.load(std::memory_order_relaxed);
 	}
 }

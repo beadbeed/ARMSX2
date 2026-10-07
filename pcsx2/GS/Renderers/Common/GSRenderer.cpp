@@ -22,6 +22,9 @@
 #include "common/HostSys.h" // GetCPUTicks — present-cap pacer
 #include "pcsx2/Config.h"
 #include "VMManager.h"
+#ifdef ENABLE_VR
+#include "VR/StereoSettings.h"
+#endif
 
 #include "common/Console.h"
 #include "common/FileSystem.h"
@@ -710,6 +713,48 @@ static GSVector4i CalculateDrawSrcRect(const GSTexture* src, const GSVector2i re
 	return GSVector4i(left, top, right, bottom);
 }
 
+// Draws a frame into dst_rect with draw(texture, rect). A per-eye frame (a two-layer
+// display target from VR stereo) has no single image to show on a flat window, so it
+// is drawn as the [VR] DebugView setting asks: both eyes side by side (each squeezed
+// into half of dst_rect), or one eye. Single-layer frames are drawn as they are.
+template <typename DrawFn>
+static void DrawEyes(GSTexture* src, const GSVector4& dst_rect, const DrawFn& draw)
+{
+#ifdef ENABLE_VR
+	if (src->GetArrayLayers() > 1)
+	{
+		using VR::StereoSettings::DebugView;
+		const DebugView view = VR::StereoSettings::GetDebugView();
+		if (view == DebugView::SBS || view == DebugView::CrossEye)
+		{
+			const u32 first = (view == DebugView::CrossEye) ? 1 : 0;
+			const float mid = (dst_rect.x + dst_rect.z) * 0.5f;
+			draw(src->GetLayerProxyTexture(first), GSVector4(dst_rect.x, dst_rect.y, mid, dst_rect.w));
+			draw(src->GetLayerProxyTexture(first ^ 1), GSVector4(mid, dst_rect.y, dst_rect.z, dst_rect.w));
+		}
+		else
+		{
+			draw(src->GetLayerProxyTexture((view == DebugView::Right) ? 1 : 0), dst_rect);
+		}
+		return;
+	}
+#endif
+	draw(src, dst_rect);
+}
+
+// How many eye images DrawEyes() puts side by side for this frame.
+static u32 EyesAcross(const GSTexture* src)
+{
+#ifdef ENABLE_VR
+	if (src->GetArrayLayers() > 1)
+	{
+		const VR::StereoSettings::DebugView view = VR::StereoSettings::GetDebugView();
+		return (view == VR::StereoSettings::DebugView::SBS || view == VR::StereoSettings::DebugView::CrossEye) ? 2 : 1;
+	}
+#endif
+	return 1;
+}
+
 static const char* GetScreenshotSuffix()
 {
 	static constexpr const char* suffixes[static_cast<u8>(GSScreenshotFormat::Count)] = {
@@ -1169,9 +1214,13 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				GetVideoMode() == GSVideoMode::SDTV_480P);
 			s_last_draw_rect = draw_rect;
 
+			// The upscalers and CAS below read and write one 2D image; a per-eye (two-layer) VR
+			// frame goes to the present unfiltered.
+			const bool per_eye = current->GetArrayLayers() > 1;
+
 			// MetalFX spatial upscale runs before CAS/present, and only when actually upscaling
 			// (source smaller than the on-screen draw rect). CAS can still sharpen afterward.
-			if (GSConfig.Upscaler == GSUpscaler::MetalFXSpatial)
+			if (!per_eye && GSConfig.Upscaler == GSUpscaler::MetalFXSpatial)
 			{
 				static bool mfx_log_once = false;
 				if (g_gs_device->Features().metalfx_spatial)
@@ -1198,7 +1247,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			// compute pass before the present render pass opens, and inside CAS's `if` rather
 			// than beside it, because SGSR sharpens as part of upscaling and letting CAS run
 			// afterwards would sharpen twice.
-			if (GSConfig.Upscaler == GSUpscaler::SGSR || GSConfig.Upscaler == GSUpscaler::SGSREdge)
+			if (!per_eye && (GSConfig.Upscaler == GSUpscaler::SGSR || GSConfig.Upscaler == GSUpscaler::SGSREdge))
 			{
 				static bool sgsr_log_once = false;
 				if (g_gs_device->Features().sgsr)
@@ -1218,7 +1267,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				}
 			}
 
-			if (GSConfig.Upscaler == GSUpscaler::FSR1)
+			if (!per_eye && GSConfig.Upscaler == GSUpscaler::FSR1)
 			{
 				static bool fsr1_log_once = false;
 				if (g_gs_device->Features().fsr1)
@@ -1236,7 +1285,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 					fsr1_log_once = true;
 				}
 			}
-			else if (GSConfig.CASMode != GSCASMode::Disabled)
+			else if (!per_eye && GSConfig.CASMode != GSCASMode::Disabled)
 			{
 				static bool cas_log_once = false;
 				if (g_gs_device->Features().cas_sharpening)
@@ -1264,8 +1313,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				const u64 current_time = Common::Timer::GetCurrentValue();
 				const float shader_time = static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - m_shader_time_start));
 
-				g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect,
-					s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+				DrawEyes(current, draw_rect, [&](GSTexture* eye, const GSVector4& rect) {
+					g_gs_device->PresentRect(eye, src_uv, nullptr, rect,
+						s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+				});
 				// This condition IS "the GS produced a frame this vsync" — every other present
 				// path either has no output to draw or redraws the previous one. Frame generation
 				// reads it so it does not interpolate motion into frames the game never drew.
@@ -1274,7 +1325,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				// the game's own image, which needs the present to be only that blit. The upscalers and
 				// CAS above draw it themselves, a TV shader filters it, rotation turns it.
 				g_gs_device->NotePresentGeometry(src_rect, draw_rect, GSConfig.LinearPresent != GSPostBilinearMode::Off,
-					GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
+					current->GetArrayLayers() == 1 && GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
 						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY &&
 						GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp &&
 						GSConfig.Rotation == DisplayRotation::Rot0 && !g_gs_device->UsesLowerLeftOrigin());
@@ -1533,8 +1584,10 @@ void GSRenderer::PresentCurrentFrame()
 			const u64 current_time = Common::Timer::GetCurrentValue();
 			const float shader_time = static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - m_shader_time_start));
 
-			g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect,
-				s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+			DrawEyes(current, draw_rect, [&](GSTexture* eye, const GSVector4& rect) {
+				g_gs_device->PresentRect(eye, src_uv, nullptr, rect,
+					s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+			});
 		}
 
 		EndPresentFrame();
@@ -1662,7 +1715,8 @@ bool GSRenderer::SaveSnapshotToMemory(u32 window_width, u32 window_height, bool 
 		draw_rect = CalculateDrawDstRect(window_width, window_height, src_rect, current->GetSize(),
 			GSDisplayAlignment::LeftOrTop, false, is_progressive);
 	}
-	const u32 draw_width = static_cast<u32>(draw_rect.z - draw_rect.x);
+	// Side-by-side eyes keep each eye's full width, so the image doubles in width.
+	const u32 draw_width = static_cast<u32>(draw_rect.z - draw_rect.x) * EyesAcross(current);
 	const u32 draw_height = static_cast<u32>(draw_rect.w - draw_rect.y);
 	const u32 image_width = crop_borders ? draw_width : std::max(draw_width, window_width);
 	const u32 image_height = crop_borders ? draw_height : std::max(draw_height, window_height);
@@ -1675,7 +1729,9 @@ bool GSRenderer::SaveSnapshotToMemory(u32 window_width, u32 window_height, bool 
 		if (dl)
 		{
 			const GSVector4i rc(0, 0, draw_width, draw_height);
-			g_gs_device->StretchRect(current, src_uv, rt, GSVector4(rc), ShaderConvert::TRANSPARENCY_FILTER, Biln);
+			DrawEyes(current, GSVector4(rc), [&](GSTexture* eye, const GSVector4& rect) {
+				g_gs_device->StretchRect(eye, src_uv, rt, rect, ShaderConvert::TRANSPARENCY_FILTER, Biln);
+			});
 			dl->CopyFromTexture(rc, rt, rc, 0);
 			dl->Flush();
 

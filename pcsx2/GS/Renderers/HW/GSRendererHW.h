@@ -286,7 +286,7 @@ private:
 	void DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, const GSVector2i& rtsize,
 		const GSVector2i& unscaled_size, float& vs_scale_x, float& vs_scale_y);
 #ifdef ENABLE_VR
-	void DetermineVRStereoConfig(const GSVector2i& unscaled_size);
+	void DetermineVRStereoConfig(const GSTextureCache::Target* rt, const GSVector2i& unscaled_size);
 #endif
 	void DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
 

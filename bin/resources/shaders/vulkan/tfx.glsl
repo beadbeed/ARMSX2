@@ -777,19 +777,41 @@ layout(location = 0) in VSOutput
 #endif
 
 #if NEEDS_TEX
+#if PS_TEX_IN_ARRAY
+#extension GL_EXT_multiview : require
+layout(set = 1, binding = 0) uniform sampler2DArray Texture;
+#define TEXC(uv) vec3(uv, float(gl_ViewIndex))
+#define ITEXC(uv) ivec3(uv, gl_ViewIndex)
+#else
 layout(set = 1, binding = 0) uniform sampler2D Texture;
+#define TEXC(uv) (uv)
+#define ITEXC(uv) (uv)
+#endif
 layout(set = 1, binding = 1) uniform texture2D Palette;
 #endif
 
 #if PS_FEEDBACK_LOOP_IS_NEEDED_RT || PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH
 	#if defined(DISABLE_TEXTURE_BARRIER) || defined(HAS_FEEDBACK_LOOP_LAYOUT)
+		#if (PS_RT_IN_ARRAY || PS_DEPTH_IN_ARRAY)
+		#extension GL_EXT_multiview : require
+		#endif
 		#if (PS_FEEDBACK_LOOP_IS_NEEDED_RT && !PS_ROV_COLOR)
-			layout(set = 1, binding = 2) uniform texture2D RtSampler;
-			vec4 sample_from_rt() { return texelFetch(RtSampler, ivec2(gl_FragCoord.xy), 0); }
+			#if PS_RT_IN_ARRAY
+				layout(set = 1, binding = 2) uniform texture2DArray RtSampler;
+				vec4 sample_from_rt() { return texelFetch(RtSampler, ivec3(ivec2(gl_FragCoord.xy), gl_ViewIndex), 0); }
+			#else
+				layout(set = 1, binding = 2) uniform texture2D RtSampler;
+				vec4 sample_from_rt() { return texelFetch(RtSampler, ivec2(gl_FragCoord.xy), 0); }
+			#endif
 		#endif
 		#if (PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH && !PS_ROV_DEPTH)
-			layout(set = 1, binding = 4) uniform texture2D DepthSampler;
-			float sample_from_depth() { return texelFetch(DepthSampler, ivec2(gl_FragCoord.xy), 0).r; }
+			#if PS_DEPTH_IN_ARRAY
+				layout(set = 1, binding = 4) uniform texture2DArray DepthSampler;
+				float sample_from_depth() { return texelFetch(DepthSampler, ivec3(ivec2(gl_FragCoord.xy), gl_ViewIndex), 0).r; }
+			#else
+				layout(set = 1, binding = 4) uniform texture2D DepthSampler;
+				float sample_from_depth() { return texelFetch(DepthSampler, ivec2(gl_FragCoord.xy), 0).r; }
+			#endif
 		#endif
 	#else
 		// Must consider each case separately since the input attachment indices must be consecutive.
@@ -849,7 +871,7 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 	// Below taken from https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#7.18.11%20LOD%20Calculations
 	// And https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_filter_anisotropic.txt
 	// With guidance from https://pema.dev/2025/05/09/mipmaps-too-much-detail/ 
-	vec2 sz = textureSize(Texture, 0);
+	vec2 sz = vec2(textureSize(Texture, 0).xy);
 	vec2 dX = dFdx(uv) * sz;
 	vec2 dY = dFdy(uv) * sz;
 
@@ -948,7 +970,7 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 
 	vec4 colour;
 	if (aniso_ratio == 1.0f)
-		colour = textureLod(Texture, uv, lod);
+		colour = textureLod(Texture, TEXC(uv), lod);
 	else
 	{
 		vec4 num = vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -957,7 +979,7 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 		{
 			vec2 d = -aniso_line + (0.5f + i) * segment;	
 			vec2 uv_sample = uv + d;
-			vec4 sample_colour = textureLod(Texture, uv_sample, lod);
+			vec4 sample_colour = textureLod(Texture, TEXC(uv_sample), lod);
 			num += sample_colour;
 		}
 
@@ -972,7 +994,7 @@ vec4 sample_c(vec2 uv)
 #if PS_TEX_IS_FB
 	return sample_from_rt();
 #elif PS_REGION_RECT
-	return texelFetch(Texture, ivec2(uv), 0);
+	return texelFetch(Texture, ITEXC(ivec2(uv)), 0);
 #else
 
 #if !PS_ADJS && !PS_ADJT
@@ -993,11 +1015,11 @@ vec4 sample_c(vec2 uv)
 #if PS_ANISOTROPIC_FILTERING > 1
 	return sample_c_af(uv, vsIn.t.w);
 #elif PS_AUTOMATIC_LOD == 1
-	return texture(Texture, uv);
+	return texture(Texture, TEXC(uv));
 #elif PS_MANUAL_LOD == 1
-	return textureLod(Texture, uv, manual_lod(vsIn.t.w));
+	return textureLod(Texture, TEXC(uv), manual_lod(vsIn.t.w));
 #else
-	return textureLod(Texture, uv, 0); // No lod
+	return textureLod(Texture, TEXC(uv), 0); // No lod
 #endif
 #endif
 }
@@ -1152,7 +1174,7 @@ uint fetch_raw_depth(ivec2 xy)
 #if PS_TEX_IS_FB
 	vec4 col = sample_from_rt();
 #else
-	vec4 col = texelFetch(Texture, xy, 0);
+	vec4 col = texelFetch(Texture, ITEXC(xy), 0);
 #endif
 	return uint(col.r * exp2(32.0f));
 }
@@ -1162,7 +1184,7 @@ vec4 fetch_raw_color(ivec2 xy)
 #if PS_TEX_IS_FB
 	return sample_from_rt();
 #else
-	return texelFetch(Texture, xy, 0);
+	return texelFetch(Texture, ITEXC(xy), 0);
 #endif
 }
 
@@ -1171,7 +1193,7 @@ vec4 fetch_c(ivec2 uv)
 #if PS_TEX_IS_FB
 	return sample_from_rt();
 #else
-	return texelFetch(Texture, uv, 0);
+	return texelFetch(Texture, ITEXC(uv), 0);
 #endif
 }
 

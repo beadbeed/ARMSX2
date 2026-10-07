@@ -1175,6 +1175,8 @@ static void PrintCommandLineHelp(const char* progname)
 #ifdef ENABLE_VR
 	std::fprintf(stderr, "  -vr-stereo <sep>,<conv>[,<zdepth>]: Stereo 3D, alternating eyes each frame (Vulkan).\n");
 	std::fprintf(stderr, "  -vr-hud <disparity>: Fixed per-eye offset for screen-space (HUD) draws.\n");
+	std::fprintf(stderr, "  -vr-view <sbs|crosseye|left|right>: With -vr-stereo, render both eyes every frame into\n"
+	                     "    per-eye targets (Vulkan multiview) and dump them side by side, or one eye.\n");
 #endif
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto. 'nullhw' runs "
 						 "GSRendererHW on the deviceless Null device -- a per-frame CPU-only cost of the hardware "
@@ -1578,7 +1580,9 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_settings_interface.SetBoolValue("VR", "StereoEnable", true);
-				s_settings_interface.SetBoolValue("VR", "InterleaveEyes", true);
+				// -vr-view, in either order, asks for per-eye targets instead.
+				if (s_settings_interface.GetStringValue("VR", "DebugView").empty())
+					s_settings_interface.SetBoolValue("VR", "InterleaveEyes", true);
 				s_settings_interface.SetFloatValue("VR", "Separation", sep.value());
 				s_settings_interface.SetFloatValue("VR", "Convergence", conv.value());
 				s_settings_interface.SetBoolValue("VR", "ZDrivenDepth", zdepth.value() != 0);
@@ -1593,6 +1597,23 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_settings_interface.SetFloatValue("VR", "CollimateDisparity", hud.value());
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-vr-view"))
+			{
+				// Per-eye (multiview) targets instead of alternating eyes; the frame dumps show
+				// both eyes in one image, or one eye on its own.
+				const std::string_view view = argv[++i];
+				static constexpr std::pair<std::string_view, const char*> views[] = {
+					{"sbs", "SBS"}, {"crosseye", "CrossEye"}, {"left", "Left"}, {"right", "Right"}};
+				const auto it = std::find_if(std::begin(views), std::end(views), [&](const auto& v) { return v.first == view; });
+				if (it == std::end(views))
+				{
+					ArgError("-vr-view: expected sbs, crosseye, left or right.");
+					return false;
+				}
+				s_settings_interface.SetBoolValue("VR", "InterleaveEyes", false);
+				s_settings_interface.SetStringValue("VR", "DebugView", it->second);
 				continue;
 			}
 #endif

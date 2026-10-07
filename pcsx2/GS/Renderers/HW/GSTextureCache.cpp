@@ -9,6 +9,10 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/GSXXH.h"
+#ifdef ENABLE_VR
+#include "VR/StereoSettings.h"
+#include "VR/StereoState.h"
+#endif
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -26,6 +30,7 @@
 #include <stdlib.h>
 #else
 #include <malloc.h>
+#include <cstdlib>
 #endif
 
 std::unique_ptr<GSTextureCache> g_texture_cache;
@@ -147,6 +152,10 @@ void GSTextureCache::ReadbackAll()
 void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 {
 	InvalidateTemporaryZ();
+#ifdef ENABLE_VR
+	if (targets)
+		m_vr_display_bps.clear();
+#endif
 	if (targets)
 		DiscardPendingDownloads();
 
@@ -3425,6 +3434,12 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 GSTextureCache::Target* GSTextureCache::CreateTarget(GIFRegTEX0 TEX0, const GSVector2i& size, const GSVector2i& valid_size, float scale, int type,
 	bool used, u32 fbmask, bool is_frame, bool preload, bool preserve_target, const GSVector4i draw_rect, GSTextureCache::Source* src)
 {
+	{
+		static const bool s_tcensus = (std::getenv("PCSX2_VR_CHAINLOG") != nullptr);
+		if (s_tcensus)
+			Console.WriteLn("(VR) CHAINLOG newtarget bp=0x%x type=%d %dx%d preload=%d preserve=%d frame=%d",
+				TEX0.TBP0, type, size.x, size.y, preload ? 1 : 0, preserve_target ? 1 : 0, is_frame ? 1 : 0);
+	}
 	if (type == DepthStencil)
 	{
 		GL_CACHE("TC: Lookup Target(Depth) %dx%d, miss (0x%x, TBW %d, %s) draw %lld", size.x, size.y, TEX0.TBP0,
@@ -4245,7 +4260,16 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 		if (!is_feedback)
 			m_no_display_hit_since_purge = false;
 
+	{
+#ifdef ENABLE_VR
+		if (VR::StereoSettings::PerEyeTargets() && g_gs_device->SupportsStereoTargets())
+		{
+			NoteDisplayChainBP(dst->m_TEX0.TBP0);
+			dst->PromoteToStereo();
+		}
+#endif
 		return dst;
+	}
 	}
 
 	// Didn't find a target, check if the frame was uploaded.
@@ -6331,6 +6355,7 @@ void GSTextureCache::InvalidateVideoMemSubTarget(GSTextureCache::Target* rt)
 
 void GSTextureCache::InvalidateSourcesFromTarget(const Target* t)
 {
+	u32 removed = 0;
 	for (auto it = m_src.m_surfaces.begin(); it != m_src.m_surfaces.end();)
 	{
 		Source* src = *it++;
@@ -6338,8 +6363,98 @@ void GSTextureCache::InvalidateSourcesFromTarget(const Target* t)
 		{
 			GL_CACHE("TC: Removing source at %x referencing target", src->m_TEX0.TBP0);
 			m_src.RemoveAt(src);
+			removed++;
 		}
 	}
+	static const bool s_srcguard = (std::getenv("PCSX2_VR_SRCGUARD") != nullptr);
+	if (s_srcguard && removed > 0)
+	{
+		Console.WriteLn("(VR) SRCGUARD invalidate: target 0x%x removed=%u promotion=%d inflight=%p inflight_from=0x%x",
+			t->m_TEX0.TBP0, removed, m_in_stereo_promotion ? 1 : 0,
+			static_cast<void*>(m_draw_inflight_source),
+			(m_draw_inflight_source && m_draw_inflight_source->m_from_target) ?
+				m_draw_inflight_source->m_from_target->m_TEX0.TBP0 : 0u);
+	}
+}
+
+void GSTextureCache::RetargetSourcesAfterPromotion(const Target* t, GSTexture* old_tex, GSTexture* new_tex)
+{
+	static const bool s_srcguard = (std::getenv("PCSX2_VR_SRCGUARD") != nullptr);
+
+	m_promo_total++;
+	if (m_draw_inflight_source)
+	{
+		m_promo_with_inflight++;
+		if (m_draw_inflight_source->m_texture == old_tex || m_draw_inflight_source->m_from_target == t)
+		{
+			m_promo_inflight_dangerous++;
+			if (s_srcguard)
+			{
+				Console.Error("(VR) SRCGUARD DANGEROUS #%u: promotion of 0x%x with the draw holding "
+							  "src bp=0x%x (%s, aliases_old=%d, from_this=%d)",
+					m_promo_inflight_dangerous, t->m_TEX0.TBP0, m_draw_inflight_source->m_TEX0.TBP0,
+					m_draw_inflight_source->m_shared_texture ? "DIRECT(shared)" : "COPY(owned)",
+					(m_draw_inflight_source->m_texture == old_tex) ? 1 : 0,
+					(m_draw_inflight_source->m_from_target == t) ? 1 : 0);
+			}
+		}
+	}
+
+	for (Source* src : m_src.m_surfaces)
+	{
+		if (src->m_texture != old_tex)
+			continue;
+
+		pxAssert(src->m_shared_texture);
+		if (!src->m_shared_texture)
+			continue;
+
+		src->m_texture = new_tex;
+		m_promo_retargeted++;
+		if (s_srcguard)
+		{
+			Console.WriteLn("(VR) SRCGUARD RETARGET #%u: map-resident source bp=0x%x re-pointed from %p to %p "
+							"(target 0x%x, in_flight=%d)",
+				m_promo_retargeted, src->m_TEX0.TBP0, static_cast<void*>(old_tex),
+				static_cast<void*>(new_tex), t->m_TEX0.TBP0, (src == m_draw_inflight_source) ? 1 : 0);
+		}
+	}
+
+	if (m_temporary_source && m_temporary_source->m_texture == old_tex && m_temporary_source->m_shared_texture)
+	{
+		m_temporary_source->m_texture = new_tex;
+		m_promo_retargeted++;
+		if (s_srcguard)
+		{
+			Console.WriteLn("(VR) SRCGUARD RETARGET #%u: TEMPORARY source bp=0x%x re-pointed from %p to %p "
+							"(target 0x%x, in_flight=%d)",
+				m_promo_retargeted, m_temporary_source->m_TEX0.TBP0, static_cast<void*>(old_tex),
+				static_cast<void*>(new_tex), t->m_TEX0.TBP0,
+				(m_temporary_source == m_draw_inflight_source) ? 1 : 0);
+		}
+	}
+
+	if (s_srcguard && (m_promo_total % 4096) == 0)
+	{
+		Console.WriteLn("(VR) SRCGUARD summary: promotions=%u with_inflight_draw=%u dangerous=%u "
+						"retargeted=%u inflight_source_frees=%u",
+			m_promo_total, m_promo_with_inflight, m_promo_inflight_dangerous, m_promo_retargeted,
+			m_draw_inflight_source_kills);
+	}
+}
+
+bool GSTextureCache::ForceKillInFlightSourceForSelfTest()
+{
+	if (!m_draw_inflight_source)
+		return false;
+	if (m_src.m_surfaces.find(m_draw_inflight_source) == m_src.m_surfaces.end())
+		return false;
+
+	Console.Error("(VR) SRCGUARD SELFTEST: deliberately freeing the in-flight draw source %p — "
+				  "the guard line below is the proof it fires; this draw is now a real UAF.",
+		static_cast<void*>(m_draw_inflight_source));
+	m_src.RemoveAt(m_draw_inflight_source);
+	return true;
 }
 
 void GSTextureCache::ReplaceSourceTexture(Source* s, GSTexture* new_texture, float new_scale,
@@ -6502,7 +6617,7 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 			const bool outside_target = ((x + w) > dst->m_texture->GetWidth() || (y + h) > dst->m_texture->GetHeight());
 			GSTexture::Usage usage = outside_target ? dst->m_texture->GetUsage() : GSTexture::Texture;
 			GSTexture* sTex = dst->m_texture;
-			GSTexture* dTex = g_gs_device->FetchSurface(usage, w, h, outside_target ? 1 : tlevels, sTex->GetFormat(), true, PreferReusedLabelledTexture());
+			GSTexture* dTex = g_gs_device->FetchSurface(usage, w, h, outside_target ? 1 : tlevels, sTex->GetFormat(), true, PreferReusedLabelledTexture(), sTex->GetArrayLayers());
 			if (!dTex) [[unlikely]]
 			{
 				Console.Error("Failed to allocate %dx%d texture for offset source", w, h);
@@ -6812,7 +6927,8 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 			// 'src' is the new texture cache entry (hence the output)
 			GSTexture::Usage usage = use_texture ? GSTexture::Texture : dst->m_texture->GetUsage();
 			GSTexture* sTex = dst->m_texture;
-			GSTexture* dTex = g_gs_device->FetchSurface(usage, new_size, 1, sTex->GetFormat(), source_rect_empty || destX != 0 || destY != 0, PreferReusedLabelledTexture());
+			const u32 vr_src_layers = is_8bits ? 1u : sTex->GetArrayLayers();
+			GSTexture* dTex = g_gs_device->FetchSurface(usage, new_size, 1, sTex->GetFormat(), source_rect_empty || destX != 0 || destY != 0, PreferReusedLabelledTexture(), vr_src_layers);
 			if (!dTex) [[unlikely]]
 			{
 				Console.Error("Failed to allocate %dx%d texture for target copy to source", new_size.x, new_size.y);
@@ -7690,7 +7806,15 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 	const int scaled_h = static_cast<int>(std::ceil(static_cast<float>(h) * scale));
 	GSTexture::Usage usage = type == RenderTarget ? GSTexture::FeedbackTarget : g_gs_device->GetDepthStencilUsage();
 	GSTexture::Format format = type == RenderTarget ? GSTexture::Format::Color : GSTexture::Format::DepthStencil;
-	GSTexture* texture = g_gs_device->FetchSurface(usage, scaled_w, scaled_h, 1, format, clear, PreferReusedLabelledTexture());
+	u32 layers = 1;
+#ifdef ENABLE_VR
+	if (type == RenderTarget && g_gs_device->SupportsStereoTargets() &&
+		VR::StereoSettings::PerEyeTargets() && g_texture_cache->IsDisplayChainBP(TEX0.TBP0))
+	{
+		layers = 2;
+	}
+#endif
+	GSTexture* texture = g_gs_device->FetchSurface(usage, scaled_w, scaled_h, 1, format, clear, PreferReusedLabelledTexture(), layers);
 	if (!texture)
 		return nullptr;
 
@@ -8480,6 +8604,25 @@ bool GSTextureCache::Target::OverlapsValid(u32 bp, u32 bw, u32 psm, const GSVect
 
 void GSTextureCache::Target::Update(bool cannot_scale)
 {
+	if (m_texture && m_texture->GetArrayLayers() >= 2 && !m_dirty.empty())
+	{
+		static const bool s_census = (std::getenv("PCSX2_VR_CHAINLOG") != nullptr);
+		static const bool s_skip = (std::getenv("PCSX2_VR_SKIP_LAYERED_UPDATE") != nullptr);
+		if (s_census)
+		{
+			for (u32 di = 0; di < static_cast<u32>(m_dirty.size()); di++)
+			{
+				const GSVector4i dr = m_dirty.GetDirtyRect(di, m_TEX0, GSVector4i::loadh(m_unscaled_size), false);
+				Console.WriteLn("(VR) CHAINLOG layered-update bp=0x%x rect=%d,%d-%d,%d skip=%d",
+					m_TEX0.TBP0, dr.x, dr.y, dr.z, dr.w, s_skip ? 1 : 0);
+			}
+		}
+		if (s_skip)
+		{
+			m_dirty.clear();
+			return;
+		}
+	}
 	m_age = 0;
 
 	// FIXME: the union of the rects may also update wrong parts of the render target (but a lot faster :)
@@ -8806,6 +8949,69 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 
 	// GL_CACHE("TC: UpdateValidity (0x%x->0x%x) from R:%d,%d Valid: %d,%d", m_TEX0.TBP0, m_end_block, rect.z, rect.w, m_valid.z, m_valid.w);
 }
+bool GSTextureCache::Target::PromoteToStereo()
+{
+	GSTexture* old_tex = m_texture;
+	if (!old_tex || old_tex->GetArrayLayers() >= 2)
+		return true;
+
+	const bool depth = old_tex->IsDepthStencil();
+	const GSVector2i size = old_tex->GetSize();
+	GSTexture* tex = g_gs_device->FetchSurface(old_tex->GetUsage(), size.x, size.y, 1,
+		old_tex->GetFormat(), false, PreferReusedLabelledTexture(), 2);
+	if (!tex)
+	{
+		Console.Error("TC: Failed to allocate %dx%d stereo target for promotion.", size.x, size.y);
+		return false;
+	}
+
+	static const bool s_vr_chainlog = (std::getenv("PCSX2_VR_CHAINLOG") != nullptr);
+	if (s_vr_chainlog)
+	{
+		Console.WriteLn("(VR) CHAINLOG promote bp=0x%x state=%s depth=%d %dx%d",
+			m_TEX0.TBP0,
+			old_tex->GetState() == GSTexture::State::Dirty ? "dirty-copy" :
+			old_tex->GetState() == GSTexture::State::Cleared ? "cleared-clear" : "invalidate",
+			depth ? 1 : 0, size.x, size.y);
+	}
+	if (old_tex->GetState() == GSTexture::State::Dirty)
+	{
+		g_gs_device->CopyRect(old_tex, tex, GSVector4i::loadh(size), 0, 0);
+	}
+	else if (old_tex->GetState() == GSTexture::State::Cleared)
+	{
+		if (depth)
+			g_gs_device->ClearDepth(tex, old_tex->GetClearDepth());
+		else
+			g_gs_device->ClearRenderTarget(tex, old_tex->GetClearColor());
+	}
+	else
+	{
+		g_gs_device->InvalidateRenderTarget(tex);
+	}
+
+	static const bool s_iss039_oldpath = (std::getenv("PCSX2_VR_ISS039_OLDPATH") != nullptr);
+	if (s_iss039_oldpath) [[unlikely]]
+	{
+		g_texture_cache->m_in_stereo_promotion = true;
+		g_texture_cache->InvalidateSourcesFromTarget(this);
+		g_texture_cache->m_in_stereo_promotion = false;
+	}
+	else
+	{
+		g_texture_cache->RetargetSourcesAfterPromotion(this, old_tex, tex);
+	}
+
+	g_texture_cache->m_target_memory_usage =
+		(g_texture_cache->m_target_memory_usage - old_tex->GetMemUsage()) + tex->GetMemUsage();
+	g_gs_device->Recycle(old_tex);
+	m_texture = tex;
+	UpdateTextureDebugName();
+
+	DevCon.WriteLn("(VR) TC: promoted %s 0x%x to a 2-layer stereo target (%dx%d).",
+		depth ? "DS" : "RT", m_TEX0.TBP0, size.x, size.y);
+	return true;
+}
 
 bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unscaled_height, bool recycle_old, bool require_new_rect, GSVector4i new_rect, bool keep_old)
 {
@@ -8835,13 +9041,21 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 			// APIs either. So use a fullscreen quad setting depth instead.
 			// Use bilinear to avoid artifacts with upscaling during native scaling.
 			const bool req_bilinear = m_downscaled && m_scale < g_gs_renderer->GetUpscaleMultiplier();
-			g_gs_device->StretchRectAuto(m_texture, tex, GSVector4(rc), req_bilinear ? Biln : Nearest);
+			// Stereo (VR): a per-eye target resizes each eye's layer.
+			const u32 copy_layers = std::min(m_texture->GetArrayLayers(), tex->GetArrayLayers());
+			for (u32 l = 0; l < copy_layers; l++)
+			{
+				g_gs_device->StretchRectAuto(m_texture->GetLayerProxyTexture(l), tex->GetLayerProxyTexture(l), GSVector4(rc),
+					req_bilinear ? Biln : Nearest);
+			}
 		}
 		else
 		{
 			if (require_new_rect)
 			{
-				g_gs_device->StretchRectAuto(m_texture, tex, GSVector4(rc), Nearest);
+				const u32 copy_layers = std::min(m_texture->GetArrayLayers(), tex->GetArrayLayers());
+				for (u32 l = 0; l < copy_layers; l++)
+					g_gs_device->StretchRectAuto(m_texture->GetLayerProxyTexture(l), tex->GetLayerProxyTexture(l), GSVector4(rc), Nearest);
 			}
 			else
 			{
@@ -8947,6 +9161,26 @@ void GSTextureCache::SourceMap::RemoveAll()
 
 void GSTextureCache::SourceMap::RemoveAt(Source* s)
 {
+	if (g_texture_cache->m_draw_inflight_source == s)
+	{
+		g_texture_cache->m_draw_inflight_source_kills++;
+		if (g_texture_cache->m_in_stereo_promotion)
+			g_texture_cache->m_draw_inflight_source_kills_promo++;
+
+		static const bool s_srcguard = (std::getenv("PCSX2_VR_SRCGUARD") != nullptr);
+		if (s_srcguard)
+		{
+			Console.Error("(VR) SRCGUARD kill #%u (%s): in-flight draw source bp=0x%x from_target=0x%x %s tex=%p layers=%u",
+				g_texture_cache->m_draw_inflight_source_kills,
+				g_texture_cache->m_in_stereo_promotion ? "stereo-promotion" : "other",
+				s->m_TEX0.TBP0,
+				s->m_from_target ? s->m_from_target->m_TEX0.TBP0 : 0u,
+				s->m_shared_texture ? "DIRECT(shared)" : "COPY(owned)",
+				static_cast<void*>(s->m_texture),
+				s->m_texture ? s->m_texture->GetArrayLayers() : 0u);
+		}
+		pxAssertMsg(false, "TC: freeing the Source the current draw is holding (use-after-free window)");
+	}
 	m_surfaces.erase(s);
 
 	GL_CACHE("TC: Remove Src Texture: 0x%x TBW %u PSM %s",

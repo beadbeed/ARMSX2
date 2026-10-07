@@ -330,6 +330,7 @@ public:
 
 		/// Resizes target texture, DOES NOT RESCALE.
 		bool ResizeTexture(int new_unscaled_width, int new_unscaled_height, bool recycle_old = true, bool require_new_rect = false, GSVector4i new_rect = GSVector4i::zero(), bool keep_old = false);
+		bool PromoteToStereo();
 
 	private:
 		void UpdateTextureDebugName();
@@ -534,6 +535,14 @@ protected:
 	std::unordered_map<SurfaceOffsetKey, SurfaceOffset, SurfaceOffsetKeyHash, SurfaceOffsetKeyEqual> m_surface_offset_cache;
 
 	Source* m_temporary_source = nullptr; // invalidated after the draw
+	Source* m_draw_inflight_source = nullptr;
+	u32 m_draw_inflight_source_kills = 0;
+	u32 m_draw_inflight_source_kills_promo = 0;
+	u32 m_promo_total = 0;
+	u32 m_promo_with_inflight = 0;
+	u32 m_promo_inflight_dangerous = 0;
+	u32 m_promo_retargeted = 0;
+	bool m_in_stereo_promotion = false;
 	GSTexture* m_temporary_z = nullptr; // invalidated after the draw
 	TempZAddress m_temporary_z_info;
 
@@ -705,6 +714,13 @@ public:
 		const GSVector4i draw_rc = GSVector4i::zero(), GSTextureCache::Source* src = nullptr);
 
 	Target* LookupDisplayTarget(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, bool is_feedback);
+	__fi bool IsDisplayChainBP(u32 bp) const { return m_vr_display_bps.find(bp) != m_vr_display_bps.end(); }
+	__fi void NoteDisplayChainBP(u32 bp) { m_vr_display_bps.insert(bp); }
+
+private:
+	std::unordered_set<u32> m_vr_display_bps;
+
+public:
 
 	Target* LookupDrawTarget(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type, bool used = true, u32 fbmask = 0,
 		bool preload = GSConfig.PreloadFrameWithGSData, bool preserve_rgb = true, bool preserve_alpha = true,
@@ -730,6 +746,7 @@ public:
 
 	/// Removes any sources which point to the specified target.
 	void InvalidateSourcesFromTarget(const Target* t);
+	void RetargetSourcesAfterPromotion(const Target* t, GSTexture* old_tex, GSTexture* new_tex);
 
 	/// Removes any sources which point to the same address as a new target.
 	void ReplaceSourceTexture(Source* s, GSTexture* new_texture, float new_scale, const GSVector2i& new_unscaled_size,
@@ -765,6 +782,10 @@ public:
 
 	/// Invalidates a temporary source, a partial copy only created from the current RT/DS for the current draw.
 	void InvalidateTemporarySource();
+	__fi void SetDrawInFlightSource(Source* s) { m_draw_inflight_source = s; }
+	bool ForceKillInFlightSourceForSelfTest();
+	__fi u32 GetDrawInFlightSourceKills() const { return m_draw_inflight_source_kills; }
+	__fi u32 GetDrawInFlightSourceKillsFromPromotion() const { return m_draw_inflight_source_kills_promo; }
 	void SetTemporaryZ(GSTexture* temp_z);
 	GSTexture* GetTemporaryZ();
 	TempZAddress GetTemporaryZInfo();

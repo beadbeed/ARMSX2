@@ -7299,7 +7299,7 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 	}
 
 #ifdef ENABLE_VR
-	DetermineVRStereoConfig(unscaled_size);
+	DetermineVRStereoConfig(rt, unscaled_size);
 #endif
 
 	m_conf.vs.iip = !IsFlatShaded();
@@ -7308,12 +7308,12 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 #ifdef ENABLE_VR
 // Stereo (VR) constants for this draw, ported from PenguinScreen2's DetermineVSConfig hook.
 // Leaves every vr_* constant zero (vertices untouched) unless stereo is enabled and this
-// draw renders into a stereo target: a 2-layer array (multiview, not yet ported) or, in
-// interleaved mode, an ordinary target that holds one eye per frame.
-void GSRendererHW::DetermineVRStereoConfig(const GSVector2i& unscaled_size)
+// draw renders into a stereo target: a 2-layer array, drawn once for both eyes with
+// multiview, or, in interleaved mode, an ordinary target that holds one eye per frame.
+void GSRendererHW::DetermineVRStereoConfig(const GSTextureCache::Target* rt, const GSVector2i& unscaled_size)
 {
 	const VR::StereoState::Params st = VR::StereoState::Get();
-	const bool vr_multiview_target = false; // per-eye layered targets arrive with multiview
+	const bool vr_multiview_target = rt && rt->m_texture && rt->m_texture->GetArrayLayers() > 1;
 	const bool vr_interleave = VR::StereoSettings::InterleaveEyes();
 
 	// A textured draw whose vertices all share one Q has no depth of its own (full-screen
@@ -7324,6 +7324,15 @@ void GSRendererHW::DetermineVRStereoConfig(const GSVector2i& unscaled_size)
 	const float vr_eye_sign = vr_multiview_target ? 1.0f : VR::StereoState::GetCurrentEyeSign();
 
 	m_conf.cb_vs.vr_stereo = vr_engaged ? GSVector2(st.separation * vr_eye_sign, st.convergence) : GSVector2(0.0f, 0.0f);
+	if (vr_multiview_target)
+	{
+		static bool s_logged_mv_draw = false;
+		if (!s_logged_mv_draw)
+		{
+			s_logged_mv_draw = true;
+			Console.WriteLn("(VR) First per-eye draw: vr_stereo = {%.4f, %.3f}.", m_conf.cb_vs.vr_stereo.x, m_conf.cb_vs.vr_stereo.y);
+		}
+	}
 	if (vr_engaged && st.map != VR::StereoState::Params::Map::Linear)
 	{
 		m_conf.cb_vs.vr_map_mode = static_cast<u32>(st.map);
@@ -9637,13 +9646,14 @@ void GSRendererHW::ConvertTextureTypeROVSingle(GSTextureCache::Target* tgt, bool
 	const bool depth = (tgt->m_type == GSTextureCache::DepthStencil);
 
 	GSTexture* old_tex = depth ? m_conf.ds : m_conf.rt;
+	const u32 vr_layers = old_tex->GetArrayLayers();
 
 	const GSTexture::Usage usage = shader_write ? GSTexture::ShaderWriteTarget : GSTexture::FeedbackTarget;
 	if (GSTexture* new_tex = depth ?
 		(shader_write ?
-			g_gs_device->FetchSurface(usage, old_tex->GetSize(), 1, GSTexture::Format::DepthColor, false, true) :
-			g_gs_device->CreateDepthStencil(old_tex->GetSize(), false, true)) :
-			g_gs_device->FetchSurface(usage, old_tex->GetSize(), 1, GSTexture::Format::Color, false, true))
+			g_gs_device->FetchSurface(usage, old_tex->GetSize(), 1, GSTexture::Format::DepthColor, false, true, vr_layers) :
+			g_gs_device->CreateDepthStencil(old_tex->GetSize(), false, true, vr_layers)) :
+			g_gs_device->FetchSurface(usage, old_tex->GetSize(), 1, GSTexture::Format::Color, false, true, vr_layers))
 	{
 		switch (old_tex->GetState())
 		{
@@ -10620,7 +10630,10 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	const GSVector2i scaled_copy_size = GSVector2i(static_cast<int>(std::ceil(static_cast<float>(copy_size.x) * scale)),
 		static_cast<int>(std::ceil(static_cast<float>(copy_size.y) * scale)));
 	const bool clear = src_target->m_texture->IsRenderTarget();
-	src_copy.reset(g_gs_device->CreateCompatible(src_target->m_texture, scaled_copy_size, clear));
+	static const bool s_vr_hazard_1l = (std::getenv("PCSX2_VR_HAZARD_1L") != nullptr);
+	const u32 copy_layers = s_vr_hazard_1l ? 1u : src_target->m_texture->GetArrayLayers();
+	src_copy.reset(g_gs_device->FetchSurface(src_target->m_texture->GetUsage(), scaled_copy_size.x,
+		scaled_copy_size.y, 1, src_target->m_texture->GetFormat(), clear, true, copy_layers));
 	if (!src_copy) [[unlikely]]
 	{
 		Console.Error("HW: Failed to allocate %dx%d texture for hazard copy", scaled_copy_size.x, scaled_copy_size.y);
@@ -10628,6 +10641,22 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 		m_conf.ps.tfx = 4;
 		return;
 	}
+	static const bool s_vr_hazard_probe = (std::getenv("PCSX2_VR_HAZARD_PROBE") != nullptr);
+	if (s_vr_hazard_probe) [[unlikely]]
+	{
+		Console.WriteLn("(VR) PROBE hazard: src_layers=%u copy_layers=%u %dx%d fmt=%d downscale=%s depth=%s scale=%.3f",
+			src_target->m_texture->GetArrayLayers(), copy_layers, scaled_copy_size.x, scaled_copy_size.y,
+			static_cast<int>(src_target->m_texture->GetFormat()), m_downscale_source ? "yes" : "no",
+			src_target->m_texture->IsDepthStencil() ? "yes" : "no", src_target->GetScale());
+		g_gs_device->VRProbeLayers(src_target->m_texture, "src_target(before-fill)");
+	}
+
+	for (u32 copy_layer = 0; copy_layer < copy_layers; copy_layer++)
+	{
+		GSTexture* const copy_src = (copy_layers > 1) ?
+			src_target->m_texture->GetLayerProxyTexture(copy_layer) : src_target->m_texture;
+		GSTexture* const copy_dst = (copy_layers > 1) ?
+			src_copy->GetLayerProxyTexture(copy_layer) : src_copy.get();
 
 	if (m_downscale_source)
 	{
@@ -10636,7 +10665,14 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 		{
 			GSVector4 src_rect = GSVector4(tmm.coverage) / GSVector4(GSVector4i::loadh(src_unscaled_size).zwzw());
 			const GSVector4 dst_rect = GSVector4(tmm.coverage);
-			g_gs_device->StretchRectAuto(src_target->m_texture, src_rect, src_copy.get(), dst_rect, Nearest);
+				if (s_vr_hazard_probe) [[unlikely]]
+				{
+					Console.WriteLn("(VR) PROBE fill: layer %u path=StretchRectAuto(downscale-depth/frac) "
+									"src_layers=%u dst_layers=%u sRect=%.4f,%.4f-%.4f,%.4f dRect=%.1f,%.1f-%.1f,%.1f",
+						copy_layer, copy_src->GetArrayLayers(), copy_dst->GetArrayLayers(), src_rect.x, src_rect.y,
+						src_rect.z, src_rect.w, dst_rect.x, dst_rect.y, dst_rect.z, dst_rect.w);
+				}
+				g_gs_device->StretchRectAuto(copy_src, src_rect, copy_dst, dst_rect, Nearest);
 		}
 		else
 		{
@@ -10652,23 +10688,43 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				copy_rect += GSVector4i(source_region.GetMinX(), source_region.GetMinY()).xyxy();
 			}
 			const GSVector4 dRect = GSVector4((copy_rect + GSVector4i(-1, 1).xxyy()).rintersect(src_target->GetUnscaledRect()));
-			g_gs_device->FilteredDownsampleTexture(src_target->m_texture, src_copy.get(), downsample_factor, clamp_min, dRect);
+				if (s_vr_hazard_probe) [[unlikely]]
+				{
+					Console.WriteLn("(VR) PROBE fill: layer %u path=FilteredDownsampleTexture factor=%u "
+									"src_layers=%u dst_layers=%u dRect=%.1f,%.1f-%.1f,%.1f",
+						copy_layer, downsample_factor, copy_src->GetArrayLayers(), copy_dst->GetArrayLayers(),
+						dRect.x, dRect.y, dRect.z, dRect.w);
+				}
+				g_gs_device->FilteredDownsampleTexture(copy_src, copy_dst, downsample_factor, clamp_min, dRect);
 		}
 	}
 	else
 	{
 		const GSVector4i offset = copy_range - GSVector4i(copy_dst_offset).xyxy();
 		// Adjust for bilinear, must be done after calculating offset.
-		copy_range.x -= 1;
-		copy_range.y -= 1;
-		copy_range.z += 1;
-		copy_range.w += 1;
-		copy_range = copy_range.rintersect(src_bounds);
 
-		const GSVector4 src_rect = GSVector4(copy_range) / GSVector4(src_unscaled_size).xyxy();
-		const GSVector4 dst_rect = (GSVector4(copy_range) - GSVector4(offset).xyxy()) * scale;
 
-		g_gs_device->StretchRectAuto(src_target->m_texture, src_rect, src_copy.get(), dst_rect, Nearest);
+			GSVector4i bilinear_range = copy_range + GSVector4i(-1, -1, 1, 1);
+			bilinear_range = bilinear_range.rintersect(src_bounds);
+
+			const GSVector4 src_rect = GSVector4(bilinear_range) / GSVector4(src_unscaled_size).xyxy();
+			const GSVector4 dst_rect = (GSVector4(bilinear_range) - GSVector4(offset).xyxy()) * scale;
+
+			if (s_vr_hazard_probe) [[unlikely]]
+			{
+				Console.WriteLn("(VR) PROBE fill: layer %u path=StretchRectAuto(plain) src_layers=%u dst_layers=%u "
+								"sRect=%.4f,%.4f-%.4f,%.4f dRect=%.1f,%.1f-%.1f,%.1f",
+					copy_layer, copy_src->GetArrayLayers(), copy_dst->GetArrayLayers(), src_rect.x, src_rect.y,
+					src_rect.z, src_rect.w, dst_rect.x, dst_rect.y, dst_rect.z, dst_rect.w);
+			}
+			g_gs_device->StretchRectAuto(copy_src, src_rect, copy_dst, dst_rect, Nearest);
+		}
+	}
+
+	if (s_vr_hazard_probe) [[unlikely]]
+	{
+		g_gs_device->VRProbeLayers(src_copy.get(), "src_copy(after-fill)");
+		g_gs_device->VRProbeLayers(src_copy.get(), "src_copy(after-fill-PROBE2)");
 	}
 	m_conf.tex = src_copy.get();
 }
@@ -11293,6 +11349,11 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 #endif
 
 	const GSDrawingEnvironment& env = *m_draw_env;
+	struct InFlightSourceScope
+	{
+		explicit InFlightSourceScope(GSTextureCache::Source* s) { g_texture_cache->SetDrawInFlightSource(s); }
+		~InFlightSourceScope() { g_texture_cache->SetDrawInFlightSource(nullptr); }
+	} inflight_source_scope(tex);
 
 	DATEOptions date_options;
 	date_options.enabled = rt && m_cached_ctx.TEST.DATE && m_cached_ctx.FRAME.PSM != PSMCT24;
@@ -11303,7 +11364,129 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	ResetStates();
 
 	m_conf.cb_vs.texture_offset = {};
-	m_conf.ps.scanmsk = env.SCANMSK.MSK;
+	static const bool s_no_scanmsk = (std::getenv("PCSX2_VR_NO_SCANMSK") != nullptr);
+	m_conf.ps.scanmsk = s_no_scanmsk ? 0 : env.SCANMSK.MSK;
+	{
+		static const bool s_census2 = (std::getenv("PCSX2_VR_CHAINLOG") != nullptr);
+		if (s_census2)
+		{
+			Console.WriteLn("(VR) DRAWCENSUS msk=%u rtL=%u tme=%d fst=%d prim=%d abe=%d r=%d,%d-%d,%d fbp=0x%x tbp=0x%x srcT=%d srcL=%u",
+				env.SCANMSK.MSK,
+				(rt && rt->m_texture) ? rt->m_texture->GetArrayLayers() : 0,
+				PRIM->TME ? 1 : 0, PRIM->FST ? 1 : 0,
+				static_cast<int>(m_vt.m_primclass), PRIM->ABE ? 1 : 0,
+				m_r.x, m_r.y, m_r.z, m_r.w,
+				m_cached_ctx.FRAME.Block(), PRIM->TME ? m_cached_ctx.TEX0.TBP0 : 0,
+				(tex && tex->m_from_target) ? 1 : 0,
+				(tex && tex->m_texture) ? tex->m_texture->GetArrayLayers() : 0);
+		}
+
+		static const bool s_zqcensus = (std::getenv("PCSX2_VR_ZQCENSUS") != nullptr);
+		if (s_zqcensus)
+		{
+			float qmin = std::numeric_limits<float>::max();
+			float qmax = -std::numeric_limits<float>::max();
+			u32 zmin = std::numeric_limits<u32>::max();
+			u32 zmax = 0;
+			for (u32 ii = 0; ii < m_index->tail; ii++)
+			{
+				const GSVertex& v = m_vertex->buff[m_index->buff[ii]];
+				qmin = std::min(qmin, v.RGBAQ.Q);
+				qmax = std::max(qmax, v.RGBAQ.Q);
+				zmin = std::min(zmin, static_cast<u32>(v.XYZ.Z));
+				zmax = std::max(zmax, static_cast<u32>(v.XYZ.Z));
+			}
+			if (m_index->tail == 0)
+			{
+				qmin = qmax = 0.0f;
+				zmin = 0;
+			}
+
+			Console.WriteLn("(VR) ZQCENSUS f=%d prim=%d tme=%d fst=%d abe=%d r=%d,%d-%d,%d (%dx%d) "
+							"fbp=0x%x fpsm=0x%x rtL=%u tbp=0x%x nv=%u ni=%u "
+							"zte=%u ztst=%u zmsk=%u zbp=0x%x zpsm=0x%x date=%u "
+							"ate=%u atst=%u aref=%u afail=%u "
+							"abcd=%u%u%u%u fix=%u "
+							"q=%.6f..%.6f qconst=%d z=%u..%u "
+							"eqz=%u eqq=%u eqstq=%u pz=%.1f..%.1f tz=%.6f..%.6f",
+				g_perfmon.GetFrame(),
+				static_cast<int>(m_vt.m_primclass), PRIM->TME ? 1 : 0, PRIM->FST ? 1 : 0,
+				PRIM->ABE ? 1 : 0,
+				m_r.x, m_r.y, m_r.z, m_r.w, m_r.width(), m_r.height(),
+				m_cached_ctx.FRAME.Block(), static_cast<u32>(m_cached_ctx.FRAME.PSM),
+				(rt && rt->m_texture) ? rt->m_texture->GetArrayLayers() : 0,
+				PRIM->TME ? m_cached_ctx.TEX0.TBP0 : 0,
+				m_vertex->next, m_index->tail,
+				static_cast<u32>(m_cached_ctx.TEST.ZTE), static_cast<u32>(m_cached_ctx.TEST.ZTST),
+				static_cast<u32>(m_cached_ctx.ZBUF.ZMSK), m_cached_ctx.ZBUF.Block(),
+				static_cast<u32>(m_cached_ctx.ZBUF.PSM), static_cast<u32>(m_cached_ctx.TEST.DATE),
+				static_cast<u32>(m_cached_ctx.TEST.ATE), static_cast<u32>(m_cached_ctx.TEST.ATST),
+				static_cast<u32>(m_cached_ctx.TEST.AREF), static_cast<u32>(m_cached_ctx.TEST.AFAIL),
+				static_cast<u32>(m_context->ALPHA.A), static_cast<u32>(m_context->ALPHA.B),
+				static_cast<u32>(m_context->ALPHA.C), static_cast<u32>(m_context->ALPHA.D),
+				static_cast<u32>(m_context->ALPHA.FIX),
+				qmin, qmax, (qmin == qmax) ? 1 : 0, zmin, zmax,
+				static_cast<u32>(m_vt.m_eq.z), static_cast<u32>(m_vt.m_eq.q),
+				static_cast<u32>(m_vt.m_eq.stq),
+				m_vt.m_min.p.z, m_vt.m_max.p.z,
+				m_vt.m_min.t.z, m_vt.m_max.t.z);
+
+			if (m_index->tail > 0 && m_index->tail <= 16)
+			{
+				const int ofx = static_cast<int>(m_context->XYOFFSET.OFX);
+				const int ofy = static_cast<int>(m_context->XYOFFSET.OFY);
+				for (u32 ii = 0; ii < m_index->tail; ii++)
+				{
+					const GSVertex& v = m_vertex->buff[m_index->buff[ii]];
+					Console.WriteLn("(VR) ZQV i=%u xy=%d,%d z=%u q=%.6f st=%.5f,%.5f a=%u",
+						ii,
+						(static_cast<int>(v.XYZ.X) - ofx) >> 4, (static_cast<int>(v.XYZ.Y) - ofy) >> 4,
+						static_cast<u32>(v.XYZ.Z), v.RGBAQ.Q, v.ST.S, v.ST.T,
+						static_cast<u32>(v.RGBAQ.A));
+				}
+			}
+		}
+	}
+#ifdef ENABLE_VR
+	if (rt && rt->m_texture && rt->m_texture->GetArrayLayers() == 1 &&
+		g_gs_device->SupportsStereoTargets() && VR::StereoSettings::PerEyeTargets() &&
+		g_texture_cache->IsDisplayChainBP(rt->m_TEX0.TBP0))
+	{
+		rt->PromoteToStereo();
+	}
+	if (rt && rt->m_texture && rt->m_texture->GetArrayLayers() > 1 && tex && tex->m_from_target &&
+		tex->m_from_target->m_texture && tex->m_from_target->m_texture->GetArrayLayers() == 1 &&
+		!g_texture_cache->IsDisplayChainBP(tex->m_from_target->m_TEX0.TBP0))
+	{
+		g_texture_cache->NoteDisplayChainBP(tex->m_from_target->m_TEX0.TBP0);
+		DevCon.WriteLn("(VR) TC: feed-edge — target 0x%x joins the display chain (sampled by a stereo draw).",
+			tex->m_from_target->m_TEX0.TBP0);
+	}
+	if (rt && ds && rt->m_texture && ds->m_texture && !m_using_temp_z)
+	{
+		if (rt->m_texture->GetArrayLayers() > ds->m_texture->GetArrayLayers())
+			ds->PromoteToStereo();
+		else if (ds->m_texture->GetArrayLayers() > rt->m_texture->GetArrayLayers())
+			rt->PromoteToStereo();
+	}
+	else if (m_using_temp_z && rt && rt->m_texture && rt->m_texture->GetArrayLayers() > 1)
+	{
+		static bool s_warned_temp_z = false;
+		if (!s_warned_temp_z)
+		{
+			s_warned_temp_z = true;
+			Console.Warning("(VR) Stereo rt with temporary-Z depth — this draw combination is "
+							"not yet layer-consistent (Phase A); expect right-eye depth artifacts here.");
+		}
+	}
+
+	{
+		static const bool s_srcguard_selftest = (std::getenv("PCSX2_VR_SRCGUARD_SELFTEST") != nullptr);
+		static bool s_selftest_done = false;
+		if (s_srcguard_selftest && !s_selftest_done && tex && tex->m_from_target)
+			s_selftest_done = g_texture_cache->ForceKillInFlightSourceForSelfTest();
+	}
+#endif
 	m_conf.rt = rt ? rt->m_texture : nullptr;
 	m_conf.ds = ds ? (m_using_temp_z ? g_texture_cache->GetTemporaryZ() : ds->m_texture) : nullptr;
 

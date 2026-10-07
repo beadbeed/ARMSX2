@@ -10125,7 +10125,9 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	if (draw_rt && config.road.clone_rt)
 	{
 		// Requires a copy of the RT.
-		draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
+		// One layer per eye: each view blends against its own eye's pixels.
+		draw_rt_clone = static_cast<GSTextureVK*>(
+			CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true, draw_rt->GetArrayLayers()));
 		if (draw_rt_clone)
 		{
 			GL_PUSH("VK: Copy RT to temp texture {%d,%d %dx%d}",
@@ -10445,12 +10447,16 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	static const bool s_no_tex_array = (std::getenv("PCSX2_VR_NO_TEX_ARRAY") != nullptr);
 	m_tfx_tex_in_array = (!s_no_tex_array && pipe.multiview && config.tex && config.tex->GetArrayLayers() > 1);
 	pipe.ps.tex_in_array = m_tfx_tex_in_array;
-	const bool fb_layout_sampled = UseFeedbackLoopLayout();
+	// A multiview draw that reads its own target reads the view's layer, so the target is bound
+	// whole (its array view) on every road: sampled with the view index under a feedback-loop
+	// layout or from a copy, or as an input attachment under texture barriers. The input
+	// attachment must be the framebuffer's own view; a single-layer view of it is a different
+	// image view, which MoltenVK reads from memory instead of from the tile, getting stale pixels.
 	static const bool s_no_fb_array = (std::getenv("PCSX2_VR_NO_FEEDBACK_ARRAY") != nullptr);
-	m_tfx_rt_in_array = (!s_no_fb_array && fb_layout_sampled && pipe.multiview && config.rt &&
+	m_tfx_rt_in_array = (!s_no_fb_array && pipe.multiview && config.rt &&
 						 config.rt->GetArrayLayers() > 1 && !config.ps.HasColorROV());
 	pipe.ps.rt_in_array = m_tfx_rt_in_array;
-	m_tfx_depth_in_array = (!s_no_fb_array && fb_layout_sampled && pipe.multiview && config.ds &&
+	m_tfx_depth_in_array = (!s_no_fb_array && pipe.multiview && config.ds &&
 							config.ds->GetArrayLayers() > 1 && !config.ps.HasDepthROV());
 	pipe.ps.depth_in_array = m_tfx_depth_in_array;
 	pipe.ps.key_lo = config.ps.key_lo;

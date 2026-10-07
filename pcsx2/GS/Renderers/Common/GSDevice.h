@@ -2139,7 +2139,7 @@ public:
 	GSTexture* CreateShaderWriteTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
 	GSTexture* CreateDepthStencil(int w, int h, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
 	GSTexture* CreateDepthStencil(const GSVector2i& size, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
-	GSTexture* CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false);
+	GSTexture* CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false, u32 layers = 1);
 	GSTexture* CreateTexture(const GSVector2i& size, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false);
 	GSTexture* CreateCompatible(GSTexture* tex, bool clear = true, bool prefer_reuse = true);
 	GSTexture* CreateCompatible(GSTexture* tex, const GSVector2i& size, bool clear = true, bool prefer_reuse = true);
