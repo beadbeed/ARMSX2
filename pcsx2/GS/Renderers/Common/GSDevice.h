@@ -854,6 +854,11 @@ struct alignas(16) GSHWDrawConfig
 				u32 rov_color : 1;
 				PS_ROV_DEPTH rov_depth : 2;
 
+				// Stereo (VR): which inputs are 2-layer per-eye arrays, sampled at gl_ViewIndex.
+				u32 tex_in_array : 1;
+				u32 rt_in_array : 1;
+				u32 depth_in_array : 1;
+
 				// Alpha stencil counter drawn by the blend unit (GSFastStencilShadow.h): the shader
 				// writes the per-triangle alpha step to both outputs instead of a colour, for a blend
 				// of source DST_ALPHA and destination SRC1_ALPHA. Reads nothing.
@@ -1774,7 +1779,7 @@ protected:
 
 	bool AcquireWindow(bool recreate_window);
 
-	virtual GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) = 0;
+	virtual GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers = 1) = 0;
 
 	virtual void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) = 0;
 	virtual void DoInterlace(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderInterlace shader, Filter filter, const InterlaceConstantBuffer& cb) = 0;
@@ -2122,16 +2127,18 @@ public:
 
 	GSTexture::Usage GetDepthStencilUsage() const;
 
-	GSTexture* FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse);
-	GSTexture* FetchSurface(GSTexture::Usage usage, const GSVector2i& size, int levels, GSTexture::Format format, bool clear, bool prefer_reuse);
-	GSTexture* CreateRenderTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
-	GSTexture* CreateRenderTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
-	GSTexture* CreateFeedbackTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
+	GSTexture* FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse, u32 layers = 1);
+	GSTexture* FetchSurface(GSTexture::Usage usage, const GSVector2i& size, int levels, GSTexture::Format format, bool clear, bool prefer_reuse, u32 layers = 1);
+	GSTexture* CreateRenderTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
+	GSTexture* CreateRenderTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
+
+	virtual bool SupportsStereoTargets() const { return false; }
+	GSTexture* CreateFeedbackTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
 	GSTexture* CreateFeedbackTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
 	GSTexture* CreateShaderWriteTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
 	GSTexture* CreateShaderWriteTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
-	GSTexture* CreateDepthStencil(int w, int h, bool clear = true, bool prefer_reuse = true);
-	GSTexture* CreateDepthStencil(const GSVector2i& size, bool clear = true, bool prefer_reuse = true);
+	GSTexture* CreateDepthStencil(int w, int h, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
+	GSTexture* CreateDepthStencil(const GSVector2i& size, bool clear = true, bool prefer_reuse = true, u32 layers = 1);
 	GSTexture* CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false);
 	GSTexture* CreateTexture(const GSVector2i& size, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false);
 	GSTexture* CreateCompatible(GSTexture* tex, bool clear = true, bool prefer_reuse = true);
@@ -2149,6 +2156,11 @@ public:
 		FlushDeferredDraws();
 		DoCopyRect(sTex, dTex, r, destX, destY);
 	}
+
+	// Stereo (VR): copy layer 0 of a per-eye array target into its other layers (a mono
+	// draw landed in a stereo target), and a debug probe of what each layer holds.
+	virtual void BroadcastLayer0(GSTexture* tex, const GSVector4& dRect) {}
+	virtual void VRProbeLayers(GSTexture* tex, const char* tag) {}
 
 	// StretchRect - all options
 	void StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderConvertSelector shader, Filter filter);
@@ -2288,7 +2300,7 @@ public:
 	void SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect,
 		bool edge_direction);
 
-	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle);
+	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle, u32 layers = 1);
 
 	void AgePool();
 	void AgePoolAfterPresentCapSkip();

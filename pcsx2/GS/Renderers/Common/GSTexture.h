@@ -110,6 +110,7 @@ public:
 protected:
 	GSVector2i m_size{};
 	int m_mipmap_levels = 0;
+	u32 m_array_layers = 1;
 	Usage m_usage = Usage::Texture;
 	Format m_format = Format::Invalid;
 	State m_state = State::Dirty;
@@ -168,6 +169,9 @@ public:
 
 	__fi int GetMipmapLevels() const { return m_mipmap_levels; }
 	__fi bool IsMipmap() const { return m_mipmap_levels > 1; }
+	__fi u32 GetArrayLayers() const { return m_array_layers; }
+
+	virtual GSTexture* GetLayerProxyTexture(u32 layer) { return this; }
 
 	__fi Usage GetUsage() const { return m_usage; }
 	__fi Format GetFormat() const { return m_format; }

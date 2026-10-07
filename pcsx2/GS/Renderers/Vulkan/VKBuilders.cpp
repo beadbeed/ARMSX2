@@ -1017,6 +1017,8 @@ void Vulkan::RenderPassBuilder::Clear()
 	m_attachment_references = {};
 	m_num_attachment_references = 0;
 	m_subpasses = {};
+	m_multiview = {};
+	m_view_mask = 0;
 }
 
 VkRenderPass Vulkan::RenderPassBuilder::Create(VkDevice device, bool clear /*= true*/)
@@ -1092,6 +1094,19 @@ void Vulkan::RenderPassBuilder::AddSubpassDepthAttachment(u32 subpass, u32 attac
 
 	VkSubpassDescription& sp = m_subpasses[subpass];
 	sp.pDepthStencilAttachment = &ar;
+}
+void Vulkan::RenderPassBuilder::SetMultiview(u32 view_count)
+{
+	m_view_mask = (view_count >= 32) ? 0xFFFFFFFFu : ((1u << view_count) - 1u);
+
+	m_multiview = {};
+	m_multiview.sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO;
+	m_multiview.subpassCount = 1;
+	m_multiview.pViewMasks = &m_view_mask;
+	m_multiview.correlationMaskCount = 1;
+	m_multiview.pCorrelationMasks = &m_view_mask;
+
+	m_ci.pNext = &m_multiview;
 }
 
 Vulkan::BufferViewBuilder::BufferViewBuilder()

@@ -62,7 +62,7 @@ static VkAccessFlagBits GetFeedbackLoopInputAccessBits()
 	                                                            VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
 }
 
-GSTextureVK::GSTextureVK(Usage usage, Format format, int width, int height, int levels, VkImage image,
+GSTextureVK::GSTextureVK(Usage usage, Format format, int width, int height, int levels, int layers, VkImage image,
 	VmaAllocation allocation, VkImageView view, VkFormat vk_format)
 	: GSTexture()
 	, m_image(image)
@@ -75,6 +75,7 @@ GSTextureVK::GSTextureVK(Usage usage, Format format, int width, int height, int 
 	m_size.x = width;
 	m_size.y = height;
 	m_mipmap_levels = levels;
+	m_array_layers = static_cast<u32>(layers);
 }
 
 GSTextureVK::~GSTextureVK()
@@ -82,15 +83,16 @@ GSTextureVK::~GSTextureVK()
 	Destroy(true);
 }
 
-std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int width, int height, int levels)
+std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int width, int height, int levels, int layers)
 {
 	pxAssert(ValidateUsageAndFormat(usage, format));
+	pxAssert(layers >= 1);
 
 	const VkFormat vk_format = GSDeviceVK::GetInstance()->LookupNativeFormat(format);
 
 	VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, nullptr, 0, VK_IMAGE_TYPE_2D, vk_format,
-		{static_cast<u32>(width), static_cast<u32>(height), 1}, static_cast<u32>(levels), 1, VK_SAMPLE_COUNT_1_BIT,
-		VK_IMAGE_TILING_OPTIMAL};
+		{static_cast<u32>(width), static_cast<u32>(height), 1}, static_cast<u32>(levels), static_cast<u32>(layers),
+		VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL};
 
 	VmaAllocationCreateInfo aci = {};
 	aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -98,8 +100,8 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 	aci.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
 	VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, nullptr, 0, VK_NULL_HANDLE,
-		VK_IMAGE_VIEW_TYPE_2D, vk_format, s_identity_swizzle,
-		{VK_IMAGE_ASPECT_COLOR_BIT, 0, static_cast<u32>(levels), 0, 1}};
+		(layers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D, vk_format, s_identity_swizzle,
+		{VK_IMAGE_ASPECT_COLOR_BIT, 0, static_cast<u32>(levels), 0, static_cast<u32>(layers)}};
 
 	ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
@@ -170,7 +172,7 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 	}
 
 	return std::unique_ptr<GSTextureVK>(
-		new GSTextureVK(usage, format, width, height, levels, image, allocation, view, vk_format));
+		new GSTextureVK(usage, format, width, height, levels, layers, image, allocation, view, vk_format));
 }
 
 std::unique_ptr<GSTextureVK> GSTextureVK::Adopt(
@@ -194,12 +196,81 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Adopt(
 	}
 
 	return std::unique_ptr<GSTextureVK>(
-		new GSTextureVK(usage, format, width, height, levels, image, VK_NULL_HANDLE, view, vk_format));
+		new GSTextureVK(usage, format, width, height, levels, 1, image, VK_NULL_HANDLE, view, vk_format));
+}
+
+VkImageView GSTextureVK::GetLayerView(u32 layer)
+{
+	pxAssert(layer < m_array_layers);
+
+	if (m_layer_views.empty())
+		m_layer_views.resize(m_array_layers, VK_NULL_HANDLE);
+
+	if (m_layer_views[layer] != VK_NULL_HANDLE)
+		return m_layer_views[layer];
+
+	const VkImageAspectFlags aspect =
+		IsDepthStencil() ? static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT) :
+						   static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_COLOR_BIT);
+
+	VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, nullptr, 0, m_image, VK_IMAGE_VIEW_TYPE_2D,
+		m_vk_format, s_identity_swizzle, {aspect, 0, static_cast<u32>(m_mipmap_levels), layer, 1u}};
+	if (m_format == Format::UNorm8)
+	{
+		static constexpr const VkComponentMapping r8_swizzle = {
+			VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R};
+		vci.components = r8_swizzle;
+	}
+
+	VkImageView view = VK_NULL_HANDLE;
+	const VkResult res = vkCreateImageView(GSDeviceVK::GetInstance()->GetDevice(), &vci, nullptr, &view);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkCreateImageView (layer view) failed: ");
+		return VK_NULL_HANDLE;
+	}
+
+	m_layer_views[layer] = view;
+	return view;
+}
+
+GSTexture* GSTextureVK::GetLayerProxyTexture(u32 layer)
+{
+	if (m_array_layers <= 1 || IsLayerProxy())
+		return this;
+
+	pxAssert(layer < m_array_layers);
+
+	CommitClear();
+
+	if (m_layer_proxies.empty())
+		m_layer_proxies.resize(m_array_layers);
+
+	if (!m_layer_proxies[layer])
+	{
+		VkImageView view = GetLayerView(layer);
+		if (view == VK_NULL_HANDLE)
+			return this;
+
+		std::unique_ptr<GSTextureVK> proxy(new GSTextureVK(
+			m_usage, m_format, m_size.x, m_size.y, m_mipmap_levels, 1, m_image, VK_NULL_HANDLE, view, m_vk_format));
+		proxy->m_proxy_parent = this;
+		proxy->m_proxy_base_layer = layer;
+		m_layer_proxies[layer] = std::move(proxy);
+	}
+
+	return m_layer_proxies[layer].get();
 }
 
 void GSTextureVK::Destroy(bool defer)
 {
 	GSDeviceVK::GetInstance()->UnbindTexture(this);
+	for (std::unique_ptr<GSTextureVK>& proxy : m_layer_proxies)
+	{
+		if (proxy)
+			proxy->Destroy(defer);
+	}
+	m_layer_proxies.clear();
 
 	if (IsRenderTargetOrDepthStencil())
 	{
@@ -227,12 +298,25 @@ void GSTextureVK::Destroy(bool defer)
 
 	if (m_view != VK_NULL_HANDLE)
 	{
+		if (!IsLayerProxy())
+		{
 		if (defer)
 			GSDeviceVK::GetInstance()->DeferImageViewDestruction(m_view);
 		else
 			vkDestroyImageView(GSDeviceVK::GetInstance()->GetDevice(), m_view, nullptr);
+		}
 		m_view = VK_NULL_HANDLE;
 	}
+	for (VkImageView layer_view : m_layer_views)
+	{
+		if (layer_view == VK_NULL_HANDLE)
+			continue;
+		if (defer)
+			GSDeviceVK::GetInstance()->DeferImageViewDestruction(layer_view);
+		else
+			vkDestroyImageView(GSDeviceVK::GetInstance()->GetDevice(), layer_view, nullptr);
+	}
+	m_layer_views.clear();
 
 	// If we don't have device memory allocated, the image is not owned by us (e.g. swapchain)
 	if (m_allocation != VK_NULL_HANDLE)
@@ -252,7 +336,7 @@ void GSTextureVK::Destroy(bool defer)
 
 VkImageLayout GSTextureVK::GetVkLayout() const
 {
-	return GetVkImageLayout(m_layout);
+	return GetVkImageLayout(GetLayout());
 }
 
 void* GSTextureVK::GetNativeHandle() const
@@ -332,6 +416,7 @@ void GSTextureVK::UpdateFromBuffer(VkCommandBuffer cmdbuf, int level, u32 x, u32
 
 bool GSTextureVK::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
+	pxAssert(!IsLayerProxy());
 	if (layer >= m_mipmap_levels)
 		return false;
 
@@ -413,6 +498,7 @@ bool GSTextureVK::DoUpdate(const GSVector4i& r, const void* data, int pitch, int
 
 bool GSTextureVK::DoMap(GSMap& m, const GSVector4i* r, int layer)
 {
+	pxAssert(!IsLayerProxy());
 	if (layer >= m_mipmap_levels || IsCompressedFormat())
 		return false;
 
@@ -559,14 +645,14 @@ void GSTextureVK::CommitClear(VkCommandBuffer cmdbuf)
 	if (IsDepthStencil())
 	{
 		const VkClearDepthStencilValue cv = {m_clear_value.depth};
-		const VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_DEPTH_BIT, 0u, 1u, 0u, 1u};
+		const VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_DEPTH_BIT, 0u, 1u, GetBaseArrayLayer(), m_array_layers};
 		vkCmdClearDepthStencilImage(cmdbuf, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
 	}
 	else if (IsRenderTarget())
 	{
 		alignas(16) VkClearColorValue cv;
 		GSVector4::store<true>(cv.float32, GetClearForFormat());
-		const VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+		const VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, GetBaseArrayLayer(), m_array_layers};
 		vkCmdClearColorImage(cmdbuf, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
 	}
 	else
@@ -579,6 +665,11 @@ void GSTextureVK::CommitClear(VkCommandBuffer cmdbuf)
 
 void GSTextureVK::OverrideImageLayout(Layout new_layout)
 {
+	if (m_proxy_parent)
+	{
+		m_proxy_parent->OverrideImageLayout(new_layout);
+		return;
+	}
 	m_layout = new_layout;
 }
 
@@ -589,6 +680,11 @@ void GSTextureVK::TransitionToLayout(Layout layout)
 
 void GSTextureVK::TransitionToLayout(VkCommandBuffer command_buffer, Layout new_layout)
 {
+	if (m_proxy_parent) [[unlikely]]
+	{
+		m_proxy_parent->TransitionToLayout(command_buffer, new_layout);
+		return;
+	}
 	if (m_layout == new_layout)
 		return;
 
@@ -635,7 +731,7 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 
 	VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, 0, 0, GetVkImageLayout(old_layout),
 		GetVkImageLayout(new_layout), VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_image,
-		{aspect, static_cast<u32>(start_level), static_cast<u32>(num_levels), 0u, 1u}};
+		{aspect, static_cast<u32>(start_level), static_cast<u32>(num_levels), GetBaseArrayLayer(), m_array_layers}};
 
 	// srcStageMask -> Stages that must complete before the barrier
 	// dstStageMask -> Stages that must wait for after the barrier before beginning
@@ -832,12 +928,15 @@ VkFramebuffer GSTextureVK::GetLinkedFramebuffer(GSTextureVK* depth_texture, bool
 		if (other_tex == depth_texture && other_feedback_loop_color == feedback_loop_color && other_feedback_loop_depth == feedback_loop_depth)
 			return fb;
 	}
+	const bool multiview =
+		(GetArrayLayers() > 1) || (depth_texture && depth_texture->GetArrayLayers() > 1);
 
 	const VkRenderPass rp = GSDeviceVK::GetInstance()->GetRenderPass(
 		!IsDepthStencil() ? m_vk_format : VK_FORMAT_UNDEFINED,
 		!IsDepthStencil() ? (depth_texture ? depth_texture->m_vk_format : VK_FORMAT_UNDEFINED) : m_vk_format,
 		VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_LOAD,
-		VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, feedback_loop_color, feedback_loop_depth);
+		VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		feedback_loop_color, feedback_loop_depth, multiview);
 	if (!rp)
 		return VK_NULL_HANDLE;
 
@@ -975,7 +1074,7 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	image_copy.bufferOffset = copy_offset;
 	image_copy.bufferRowLength = GSTexture::CalcUploadRowLengthFromPitch(m_format, m_current_pitch);
 	image_copy.bufferImageHeight = 0;
-	image_copy.imageSubresource = {aspect, src_level, 0u, 1u};
+	image_copy.imageSubresource = {aspect, src_level, vkTex->GetBaseArrayLayer(), 1u};
 	image_copy.imageOffset = {src.left, src.top, 0};
 	image_copy.imageExtent = {static_cast<u32>(src.width()), static_cast<u32>(src.height()), 1u};
 

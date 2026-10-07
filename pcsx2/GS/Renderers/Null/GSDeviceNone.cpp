@@ -273,7 +273,7 @@ void GSDeviceNone::ClearSamplerCache()
 {
 }
 
-GSTexture* GSDeviceNone::CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format)
+GSTexture* GSDeviceNone::CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers)
 {
 	return new GSTextureNone(usage, width, height, levels, format);
 }

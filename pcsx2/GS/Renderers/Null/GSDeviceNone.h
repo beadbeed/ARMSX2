@@ -106,7 +106,7 @@ public:
 protected:
 	static inline GSNullDeviceProfile::Id s_feature_profile = GSNullDeviceProfile::kDefault;
 
-	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
+	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers = 1) override;
 
 	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,
 		const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) override;

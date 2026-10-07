@@ -61,6 +61,8 @@ public:
 		/// GSDynamicFeedbackLoopPolicy.h.
 		bool vk_ext_attachment_feedback_loop_dynamic_state : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
+		/// Stereo (VR): one render pass draws both eyes into a 2-layer target.
+		bool vk_khr_multiview : 1;
 		/// Both are required by the LSFG frame-generation shaders and by NOTHING else in the
 		/// renderer. They are requested anyway whenever the driver really has them, because the
 		/// alternative is recreating the device when frame generation is switched on.
@@ -83,6 +85,7 @@ public:
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
 	__fi const VkPhysicalDeviceDriverPropertiesKHR& GetDeviceDriverProperties() const { return m_device_driver_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
+	__fi bool SupportsMultiview() const { return m_optional_extensions.vk_khr_multiview; }
 
 	/// Which memory the six stream rings are allocated from, decided once in CheckFeatures from the
 	/// device's memory-type table and the driver database. VKStreamBuffer::Create reads it; nothing
@@ -188,7 +191,7 @@ public:
 		VkAttachmentStoreOp depth_store_op = VK_ATTACHMENT_STORE_OP_STORE,
 		VkAttachmentLoadOp stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 		VkAttachmentStoreOp stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE, bool color_feedback_loop = false,
-		bool depth_sampling = false);
+		bool depth_sampling = false, bool multiview = false);
 
 	// Gets a non-clearing version of the specified render pass. Slow, don't call in hot path.
 	VkRenderPass GetRenderPassForRestarting(VkRenderPass pass);
@@ -295,6 +298,7 @@ private:
 			u32 stencil_store_op : 1;
 			u32 color_feedback_loop : 1;
 			u32 depth_sampling : 1;
+			u32 multiview : 1;
 		};
 
 		u32 key;
@@ -316,6 +320,7 @@ private:
 	VkDescriptorPool CreateFrameDescriptorPool();
 
 	VkRenderPass CreateCachedRenderPass(RenderPassCacheKey key);
+	void RunMultiviewSelfTest();
 
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
@@ -511,6 +516,7 @@ public:
 				u32 line_width : 1;
 				u32 feedback_loop_flags : 3;
 				u32 raster_order : 1;
+				u32 multiview : 1; ///< Stereo (VR): both eyes of a 2-layer target in one pass.
 			};
 
 			u32 key;
@@ -710,7 +716,8 @@ private:
 
 	std::string m_tfx_source;
 
-	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
+	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers = 1) override;
+	bool SupportsStereoTargets() const override { return SupportsMultiview(); }
 
 	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,
 		const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) final;
@@ -752,7 +759,13 @@ private:
 	VkSampler GetSampler(GSHWDrawConfig::SamplerSelector ss);
 	void ClearSamplerCache() final;
 
-	VkShaderModule GetTFXVertexShader(GSHWDrawConfig::VSSelector sel);
+	// The VS module cache is keyed on the selector plus the stereo (multiview) variant, which
+	// only the Vulkan backend has and so is not part of the shared VSSelector byte.
+	static __fi u32 VertexShaderKey(GSHWDrawConfig::VSSelector sel, bool multiview)
+	{
+		return static_cast<u32>(sel.key) | (multiview ? 0x100u : 0u);
+	}
+	VkShaderModule GetTFXVertexShader(GSHWDrawConfig::VSSelector sel, bool multiview = false);
 	VkShaderModule GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel);
 	VkPipeline CreateTFXPipeline(const PipelineSelector& p);
 	VkPipeline GetTFXPipeline(const PipelineSelector& p);
@@ -827,10 +840,14 @@ public:
 	static bool IsSuitableDefaultRenderer();
 
 	__fi VkRenderPass GetTFXRenderPass(bool rt, bool ds, bool colclip, bool stencil, bool fbl, bool dsp,
-		VkAttachmentLoadOp rt_op, VkAttachmentLoadOp ds_op) const
+		VkAttachmentLoadOp rt_op, VkAttachmentLoadOp ds_op, bool multiview = false)
 	{
+		if (multiview) [[unlikely]]
+			return GetTFXMultiviewRenderPass(rt, ds, colclip, stencil, fbl, dsp, rt_op, ds_op);
 		return m_tfx_render_pass[rt][ds][colclip][stencil][fbl][dsp][rt_op][ds_op];
 	}
+	VkRenderPass GetTFXMultiviewRenderPass(bool rt, bool ds, bool colclip, bool stencil, bool fbl, bool dsp,
+		VkAttachmentLoadOp rt_op, VkAttachmentLoadOp ds_op);
 	__fi VkSampler GetPointSampler() const { return m_point_sampler; }
 	__fi VkSampler GetLinearSampler() const { return m_linear_sampler; }
 
@@ -891,6 +908,8 @@ public:
 	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
 
 	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
+	void BroadcastLayer0(GSTexture* tex, const GSVector4& dRect) override;
+	void VRProbeLayers(GSTexture* tex, const char* tag) override;
 
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		PresentShader shader, float shaderTime, Filter filter) override;
@@ -1117,6 +1136,10 @@ private:
 
 	const GSTextureVK* m_utility_texture = nullptr;
 	VkSampler m_utility_sampler = VK_NULL_HANDLE;
+	bool m_tfx_tex_in_array = false;
+
+	bool m_tfx_rt_in_array = false;
+	bool m_tfx_depth_in_array = false;
 	VkDescriptorSet m_utility_descriptor_set = VK_NULL_HANDLE;
 
 	PipelineLayout m_current_pipeline_layout = PipelineLayout::Undefined;

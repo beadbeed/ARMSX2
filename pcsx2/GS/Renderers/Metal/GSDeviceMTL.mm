@@ -659,8 +659,9 @@ static constexpr MTLPixelFormat ConvertPixelFormat(GSTexture::Format format)
 	}
 }
 
-GSTexture* GSDeviceMTL::CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format)
+GSTexture* GSDeviceMTL::CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers)
 { @autoreleasepool {
+	pxAssert(layers == 1); // per-eye array targets are Vulkan-only
 	pxAssert(GSTexture::ValidateUsageAndFormat(usage, format));
 
 	MTLPixelFormat fmt = ConvertPixelFormat(format);

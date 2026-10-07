@@ -40,6 +40,9 @@ namespace
 	constexpr u64 kLibretroRetireFrames = 6;
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
+#ifdef ENABLE_OPENXR
+#include "VR/VRVulkanBridge.h"
+#endif
 #include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
@@ -233,6 +236,13 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 	}
 
 	VkInstance instance;
+#ifdef ENABLE_OPENXR
+	if (VR::VulkanBootstrapActive())
+	{
+		if (VR::CreateVulkanInstanceThroughXR(&instance_create_info, &instance))
+			return instance;
+	}
+#endif
 	VkResult res = vkCreateInstance(&instance_create_info, nullptr, &instance);
 	if (res != VK_SUCCESS)
 	{
@@ -807,6 +817,14 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
 	VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_ext_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+	// Stereo (VR): multiview is core in Vulkan 1.1; enable it whenever the device has it.
+	VkPhysicalDeviceMultiviewFeatures multiview_feature = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES};
+	{
+		VkPhysicalDeviceMultiviewFeatures multiview_query = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES};
+		VkPhysicalDeviceFeatures2 multiview_features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &multiview_query};
+		vkGetPhysicalDeviceFeatures2(m_physical_device, &multiview_features2);
+		m_optional_extensions.vk_khr_multiview = (multiview_query.multiview == VK_TRUE);
+	}
 	VkPhysicalDeviceVulkanMemoryModelFeatures vulkan_memory_model_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
 	VkPhysicalDeviceRobustness2FeaturesEXT robustness2_feature = {
@@ -983,7 +1001,21 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		Vulkan::AddPointerToChain(&device_info, &float16_int8_feature);
 	}
 
-	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
+	if (m_optional_extensions.vk_khr_multiview)
+	{
+		multiview_feature.multiview = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &multiview_feature);
+	}
+
+	VkResult res;
+#ifdef ENABLE_OPENXR
+	if (VR::VulkanBootstrapActive() && VR::CreateVulkanDeviceThroughXR(m_physical_device, &device_info, &m_device))
+		res = VK_SUCCESS;
+	else
+#endif
+	{
+		res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
+	}
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkCreateDevice failed: ");
@@ -1444,7 +1476,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_format, VkAttachmentLoadOp color_load_op,
 	VkAttachmentStoreOp color_store_op, VkAttachmentLoadOp depth_load_op, VkAttachmentStoreOp depth_store_op,
 	VkAttachmentLoadOp stencil_load_op, VkAttachmentStoreOp stencil_store_op, bool color_feedback_loop,
-	bool depth_sampling)
+	bool depth_sampling, bool multiview)
 {
 	RenderPassCacheKey key = {};
 	key.color_format = color_format;
@@ -1457,6 +1489,7 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	key.stencil_store_op = stencil_store_op;
 	key.color_feedback_loop = color_feedback_loop;
 	key.depth_sampling = depth_sampling;
+	key.multiview = multiview;
 
 	// Mali driver bug (ported from PPSSPP): a packed depth/stencil attachment whose
 	// depth vs stencil load-ops MISMATCH corrupts on ARM Mali. PCSX2's GS uses one
@@ -1474,6 +1507,25 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 		return it->second;
 
 	return CreateCachedRenderPass(key);
+}
+
+VkRenderPass GSDeviceVK::GetTFXMultiviewRenderPass(bool rt, bool ds, bool colclip, bool stencil, bool fbl,
+	bool dsp, VkAttachmentLoadOp rt_op, VkAttachmentLoadOp ds_op)
+{
+	const VkFormat rp_rt_format =
+		rt ? LookupNativeFormat(colclip ? GSTexture::Format::ColorClip : GSTexture::Format::Color) :
+			 VK_FORMAT_UNDEFINED;
+	const VkFormat rp_depth_format = ds ? LookupNativeFormat(GSTexture::Format::DepthStencil) : VK_FORMAT_UNDEFINED;
+	const VkAttachmentLoadOp opc =
+		(!stencil || !m_features.stencil_buffer) ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
+
+	return GetRenderPass(rp_rt_format, rp_depth_format,
+		(rp_rt_format != VK_FORMAT_UNDEFINED) ? rt_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		(rp_rt_format != VK_FORMAT_UNDEFINED) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		(rp_depth_format != VK_FORMAT_UNDEFINED) ? ds_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		(rp_depth_format != VK_FORMAT_UNDEFINED) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		(rp_depth_format != VK_FORMAT_UNDEFINED) ? opc : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		VK_ATTACHMENT_STORE_OP_DONT_CARE, fbl, dsp, true);
 }
 
 VkRenderPass GSDeviceVK::GetRenderPassForRestarting(VkRenderPass pass)
@@ -2396,8 +2448,9 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 				subpass_dependency[num_subpass_dependencies].dstAccessMask =
 					UseFeedbackLoopLayout() ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
 				subpass_dependency[num_subpass_dependencies].dependencyFlags =
-					UseFeedbackLoopLayout() ? (VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT) :
-											  VK_DEPENDENCY_BY_REGION_BIT;
+					(UseFeedbackLoopLayout() ? (VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT) :
+											   VK_DEPENDENCY_BY_REGION_BIT) |
+					(key.multiview ? VK_DEPENDENCY_VIEW_LOCAL_BIT : 0u);
 				num_subpass_dependencies++;
 			}
 		}
@@ -2442,8 +2495,9 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 				subpass_dependency[num_subpass_dependencies].dstAccessMask =
 					UseFeedbackLoopLayout() ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
 				subpass_dependency[num_subpass_dependencies].dependencyFlags =
-					UseFeedbackLoopLayout() ? (VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT) :
-											  VK_DEPENDENCY_BY_REGION_BIT;
+					(UseFeedbackLoopLayout() ? (VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT) :
+											   VK_DEPENDENCY_BY_REGION_BIT) |
+					(key.multiview ? VK_DEPENDENCY_VIEW_LOCAL_BIT : 0u);
 				num_subpass_dependencies++;
 			}
 		}
@@ -2552,7 +2606,12 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	const VkSubpassDescription subpass = {subpass_flags, VK_PIPELINE_BIND_POINT_GRAPHICS, num_subpass_inputs,
 		num_subpass_inputs ? input_reference.data() : nullptr, color_reference_ptr ? 1u : 0u,
 		color_reference_ptr ? color_reference_ptr : nullptr, nullptr, depth_reference_ptr, 0, nullptr};
-	const VkRenderPassCreateInfo pass_info = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, nullptr, 0u, num_attachments,
+	const u32 view_mask = 0x3u;
+	const VkRenderPassMultiviewCreateInfo multiview_info = {VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO, nullptr,
+		1u, &view_mask, 0u, nullptr, 1u, &view_mask};
+
+	const VkRenderPassCreateInfo pass_info = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+		key.multiview ? &multiview_info : nullptr, 0u, num_attachments,
 		attachments.data(), 1u, &subpass, num_subpass_dependencies, num_subpass_dependencies ? subpass_dependency.data() : nullptr};
 
 	VkRenderPass pass;
@@ -3115,7 +3174,348 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 
 	InitializeState();
+	if (const char* val = std::getenv("PCSX2_VR_MV_SELFTEST"); val && StringUtil::FromChars<bool>(val).value_or(false))
+	{
+		RunMultiviewSelfTest();
+		InitializeState();
+	}
 	return true;
+}
+
+void GSDeviceVK::RunMultiviewSelfTest()
+{
+	Console.WriteLn("(VR) MV self-test: starting (PCSX2_VR_MV_SELFTEST=1).");
+
+	const bool mv_supported = SupportsMultiview();
+	Console.WriteLn("(VR) MV self-test: multiview feature supported: %s", mv_supported ? "yes" : "no");
+	if (!mv_supported)
+	{
+		Console.WriteLn("(VR) MV self-test: multiview unsupported on this GPU — skipping gracefully (not a failure).");
+		return;
+	}
+
+	static constexpr int TEST_W = 256;
+	static constexpr int TEST_H = 224;
+	static constexpr int TEST_LAYERS = 2;
+
+	bool ok = true;
+
+	std::unique_ptr<GSTextureVK> tex =
+		GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, TEST_LAYERS);
+	const bool tex_ok =
+		static_cast<bool>(tex) && tex->GetArrayLayers() == static_cast<u32>(TEST_LAYERS) && tex->GetView() != VK_NULL_HANDLE;
+	const VkImageView layer0 = tex_ok ? tex->GetLayerView(0) : VK_NULL_HANDLE;
+	const VkImageView layer1 = tex_ok ? tex->GetLayerView(1) : VK_NULL_HANDLE;
+	const bool views_ok = tex_ok && layer0 != VK_NULL_HANDLE && layer1 != VK_NULL_HANDLE;
+	Console.WriteLn("(VR) MV self-test: 2-layer image + array/per-layer views created: %s", views_ok ? "yes" : "NO");
+	ok = ok && views_ok;
+
+	VkRenderPass rp = VK_NULL_HANDLE;
+	if (views_ok)
+	{
+		Vulkan::RenderPassBuilder rpb;
+		rpb.AddAttachment(tex->GetVkFormat(), VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
+			VK_ATTACHMENT_STORE_OP_STORE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		rpb.AddSubpass();
+		rpb.AddSubpassColorAttachment(0, 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		rpb.SetMultiview(2);
+		rp = rpb.Create(m_device);
+	}
+	const bool rp_ok = (rp != VK_NULL_HANDLE);
+	Console.WriteLn("(VR) MV self-test: 2-view multiview render pass created: %s", rp_ok ? "yes" : "NO");
+	ok = ok && rp_ok;
+
+	VkFramebuffer fb = VK_NULL_HANDLE;
+	if (rp_ok)
+	{
+		Vulkan::FramebufferBuilder fbb;
+		fbb.AddAttachment(tex->GetView());
+		fbb.SetSize(TEST_W, TEST_H, 1);
+		fbb.SetRenderPass(rp);
+		fb = fbb.Create(m_device);
+	}
+	const bool fb_ok = (fb != VK_NULL_HANDLE);
+	Console.WriteLn("(VR) MV self-test: framebuffer (layers=1 over 2D_ARRAY view) created: %s", fb_ok ? "yes" : "NO");
+	ok = ok && fb_ok;
+
+	bool submit_ok = false;
+	if (fb_ok)
+	{
+		EndRenderPass();
+		const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+
+		VkClearValue cv = {};
+		cv.color.float32[0] = 0.0f;
+		cv.color.float32[1] = 0.25f;
+		cv.color.float32[2] = 0.5f;
+		cv.color.float32[3] = 1.0f;
+		const VkRenderPassBeginInfo bi = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, rp, fb,
+			{{0, 0}, {static_cast<u32>(TEST_W), static_cast<u32>(TEST_H)}}, 1u, &cv};
+		vkCmdBeginRenderPass(cmdbuf, &bi, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdEndRenderPass(cmdbuf);
+
+		tex->OverrideImageLayout(GSTextureVK::Layout::ColorAttachment);
+		tex->TransitionToLayout(cmdbuf, GSTextureVK::Layout::ShaderReadOnly);
+
+		ExecuteCommandBuffer(true);
+		submit_ok = !m_last_submit_failed;
+	}
+	Console.WriteLn("(VR) MV self-test: pass recorded + submitted + waited idle: %s", submit_ok ? "yes" : "NO");
+	ok = ok && submit_ok;
+
+	bool mirror_ok = false;
+	if (ok)
+	{
+		static constexpr u8 COLOUR_A[4] = {255, 0, 0, 255};
+		static constexpr u8 COLOUR_B[4] = {0, 255, 0, 255};
+		const VkClearColorValue cvA = {{1.0f, 0.0f, 0.0f, 1.0f}};
+		const VkClearColorValue cvB = {{0.0f, 1.0f, 0.0f, 1.0f}};
+
+		EndRenderPass();
+		VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+		tex->TransitionToLayout(cmdbuf, GSTextureVK::Layout::TransferDst);
+		const VkImageSubresourceRange srr_l0 = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+		const VkImageSubresourceRange srr_l1 = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 1u, 1u};
+		vkCmdClearColorImage(cmdbuf, tex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cvA, 1, &srr_l0);
+		vkCmdClearColorImage(cmdbuf, tex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cvB, 1, &srr_l1);
+
+		BroadcastLayer0(tex.get(), GSVector4(0.0f, 0.0f, static_cast<float>(TEST_W), static_cast<float>(TEST_H)));
+
+		std::unique_ptr<GSTextureVK> scratch0 =
+			GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, 1);
+		std::unique_ptr<GSTextureVK> scratch1 =
+			GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, 1);
+		std::unique_ptr<GSDownloadTextureVK> dl0 = GSDownloadTextureVK::Create(TEST_W, TEST_H, GSTexture::Format::Color);
+		std::unique_ptr<GSDownloadTextureVK> dl1 = GSDownloadTextureVK::Create(TEST_W, TEST_H, GSTexture::Format::Color);
+		const bool rb_alloc_ok = static_cast<bool>(scratch0) && static_cast<bool>(scratch1) &&
+								 static_cast<bool>(dl0) && static_cast<bool>(dl1);
+		Console.WriteLn("(VR) MV self-test: readback scratch RTs + download buffers allocated: %s",
+			rb_alloc_ok ? "yes" : "NO");
+
+		if (rb_alloc_ok)
+		{
+			cmdbuf = GetCurrentCommandBuffer();
+			tex->TransitionToLayout(cmdbuf, GSTextureVK::Layout::TransferSrc);
+			scratch0->TransitionToLayout(cmdbuf, GSTextureVK::Layout::TransferDst);
+			scratch1->TransitionToLayout(cmdbuf, GSTextureVK::Layout::TransferDst);
+
+			const VkImageCopy ic0 = {{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+				{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+				{static_cast<u32>(TEST_W), static_cast<u32>(TEST_H), 1u}};
+			const VkImageCopy ic1 = {{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 1u}, {0, 0, 0},
+				{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+				{static_cast<u32>(TEST_W), static_cast<u32>(TEST_H), 1u}};
+			vkCmdCopyImage(cmdbuf, tex->GetImage(), tex->GetVkLayout(), scratch0->GetImage(),
+				scratch0->GetVkLayout(), 1, &ic0);
+			vkCmdCopyImage(cmdbuf, tex->GetImage(), tex->GetVkLayout(), scratch1->GetImage(),
+				scratch1->GetVkLayout(), 1, &ic1);
+
+			const GSVector4i full = GSVector4i(0, 0, TEST_W, TEST_H);
+			dl0->CopyFromTexture(full, scratch0.get(), full, 0, false);
+			dl1->CopyFromTexture(full, scratch1.get(), full, 0, false);
+			dl0->Flush();
+			dl1->Flush();
+
+			const bool map_ok = dl0->Map(full) && dl1->Map(full);
+			if (map_ok)
+			{
+				const auto sample_eq = [](const GSDownloadTextureVK* dl, int x, int y, const u8 exp[4]) -> bool {
+					const u8* px = dl->GetMapPointer() + static_cast<size_t>(y) * dl->GetMapPitch() +
+								   static_cast<size_t>(x) * 4u;
+					return px[0] == exp[0] && px[1] == exp[1] && px[2] == exp[2] && px[3] == exp[3];
+				};
+				const int sx[5] = {0, TEST_W - 1, 0, TEST_W - 1, TEST_W / 2};
+				const int sy[5] = {0, 0, TEST_H - 1, TEST_H - 1, TEST_H / 2};
+				bool l0_all_A = true, l1_all_A = true;
+				for (int i = 0; i < 5; i++)
+				{
+					l0_all_A = l0_all_A && sample_eq(dl0.get(), sx[i], sy[i], COLOUR_A);
+					l1_all_A = l1_all_A && sample_eq(dl1.get(), sx[i], sy[i], COLOUR_A);
+				}
+				mirror_ok = l0_all_A && l1_all_A;
+				Console.WriteLn("(VR) MV self-test: layer0 == A (source untouched): %s", l0_all_A ? "yes" : "NO");
+				Console.WriteLn("(VR) MV self-test: layer1 == A (mirror of layer0, was B): %s", l1_all_A ? "yes" : "NO");
+			}
+			else
+			{
+				Console.WriteLn("(VR) MV self-test: readback map failed: NO");
+			}
+		}
+	}
+	Console.WriteLn("(VR) MV self-test: layer0->layer1 mirror verified: %s",
+		ok ? (mirror_ok ? "yes" : "NO") : "skipped (prereqs failed)");
+	ok = ok && mirror_ok;
+
+	bool proxy_ok = false;
+	if (ok)
+	{
+		static constexpr u8 COL_RED[4] = {255, 0, 0, 255};
+		static constexpr u8 COL_GRN[4] = {0, 255, 0, 255};
+		static constexpr u8 COL_BLU[4] = {0, 0, 255, 255};
+		static constexpr u8 COL_YEL[4] = {255, 255, 0, 255};
+		const VkClearColorValue cv_red = {{1.0f, 0.0f, 0.0f, 1.0f}};
+		const VkClearColorValue cv_grn = {{0.0f, 1.0f, 0.0f, 1.0f}};
+		const VkClearColorValue cv_blu = {{0.0f, 0.0f, 1.0f, 1.0f}};
+		const VkClearColorValue cv_yel = {{1.0f, 1.0f, 0.0f, 1.0f}};
+
+		const auto clear_layer = [&](GSTextureVK* t, u32 layer, const VkClearColorValue& cv) {
+			const VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, layer, 1u};
+			vkCmdClearColorImage(GetCurrentCommandBuffer(), t->GetImage(),
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
+		};
+
+		const auto reset_dst = [&]() {
+			EndRenderPass();
+			tex->TransitionToLayout(GetCurrentCommandBuffer(), GSTextureVK::Layout::TransferDst);
+			clear_layer(tex.get(), 0, cv_red);
+			clear_layer(tex.get(), 1, cv_grn);
+			tex->SetState(GSTexture::State::Dirty);
+		};
+
+		const auto read_both = [&](u8 out0[4], u8 out1[4]) -> bool {
+			std::unique_ptr<GSTextureVK> s0 =
+				GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, 1);
+			std::unique_ptr<GSTextureVK> s1 =
+				GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, 1);
+			std::unique_ptr<GSDownloadTextureVK> d0 =
+				GSDownloadTextureVK::Create(TEST_W, TEST_H, GSTexture::Format::Color);
+			std::unique_ptr<GSDownloadTextureVK> d1 =
+				GSDownloadTextureVK::Create(TEST_W, TEST_H, GSTexture::Format::Color);
+			if (!s0 || !s1 || !d0 || !d1)
+				return false;
+
+			EndRenderPass();
+			VkCommandBuffer cb = GetCurrentCommandBuffer();
+			tex->TransitionToLayout(cb, GSTextureVK::Layout::TransferSrc);
+			s0->TransitionToLayout(cb, GSTextureVK::Layout::TransferDst);
+			s1->TransitionToLayout(cb, GSTextureVK::Layout::TransferDst);
+			const VkImageCopy c0 = {{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+				{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+				{static_cast<u32>(TEST_W), static_cast<u32>(TEST_H), 1u}};
+			const VkImageCopy c1 = {{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 1u}, {0, 0, 0},
+				{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+				{static_cast<u32>(TEST_W), static_cast<u32>(TEST_H), 1u}};
+			vkCmdCopyImage(cb, tex->GetImage(), tex->GetVkLayout(), s0->GetImage(), s0->GetVkLayout(), 1, &c0);
+			vkCmdCopyImage(cb, tex->GetImage(), tex->GetVkLayout(), s1->GetImage(), s1->GetVkLayout(), 1, &c1);
+
+			const GSVector4i full = GSVector4i(0, 0, TEST_W, TEST_H);
+			d0->CopyFromTexture(full, s0.get(), full, 0, false);
+			d1->CopyFromTexture(full, s1.get(), full, 0, false);
+			d0->Flush();
+			d1->Flush();
+			if (!d0->Map(full) || !d1->Map(full))
+				return false;
+
+			const size_t o0 = static_cast<size_t>(TEST_H / 2) * d0->GetMapPitch() + static_cast<size_t>(TEST_W / 2) * 4u;
+			const size_t o1 = static_cast<size_t>(TEST_H / 2) * d1->GetMapPitch() + static_cast<size_t>(TEST_W / 2) * 4u;
+			for (int i = 0; i < 4; i++)
+			{
+				out0[i] = d0->GetMapPointer()[o0 + i];
+				out1[i] = d1->GetMapPointer()[o1 + i];
+			}
+			return true;
+		};
+
+		const auto eq4 = [](const u8* a, const u8 b[4]) {
+			return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+		};
+		static char name_buf[2][32];
+		int name_slot = 0;
+		const auto name4 = [&, eq4](const u8* c) -> const char* {
+			if (eq4(c, COL_RED)) return "RED(l0-base)";
+			if (eq4(c, COL_GRN)) return "GRN(l1-base)";
+			if (eq4(c, COL_BLU)) return "BLU(written)";
+			if (eq4(c, COL_YEL)) return "YEL(src-l1)";
+			char* b = name_buf[name_slot++ & 1];
+			std::snprintf(b, sizeof(name_buf[0]), "other(%02x%02x%02x%02x)", c[0], c[1], c[2], c[3]);
+			return b;
+		};
+
+		std::unique_ptr<GSTextureVK> src1 =
+			GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, 1);
+		std::unique_ptr<GSTextureVK> src2 =
+			GSTextureVK::Create(GSTexture::RenderTarget, GSTexture::Format::Color, TEST_W, TEST_H, 1, 2);
+		const bool src_ok = static_cast<bool>(src1) && static_cast<bool>(src2);
+		Console.WriteLn("(VR) MV self-test: (6) proxy-write sources allocated: %s", src_ok ? "yes" : "NO");
+
+		if (src_ok)
+		{
+			EndRenderPass();
+			VkCommandBuffer cb = GetCurrentCommandBuffer();
+			src1->CommitClear(cb);
+			src2->CommitClear(cb);
+			src1->TransitionToLayout(cb, GSTextureVK::Layout::TransferDst);
+			src2->TransitionToLayout(cb, GSTextureVK::Layout::TransferDst);
+			clear_layer(src1.get(), 0, cv_blu);
+			clear_layer(src2.get(), 0, cv_blu);
+			clear_layer(src2.get(), 1, cv_yel);
+			src1->SetState(GSTexture::State::Dirty);
+			src2->SetState(GSTexture::State::Dirty);
+
+			const GSVector4 uv_full(0.0f, 0.0f, 1.0f, 1.0f);
+			const GSVector4 px_full(0.0f, 0.0f, static_cast<float>(TEST_W), static_cast<float>(TEST_H));
+			const GSVector4i px_fulli = GSVector4i(0, 0, TEST_W, TEST_H);
+			u8 g0[4] = {}, g1[4] = {};
+
+			GSTexture* const dprox1 = tex->GetLayerProxyTexture(1);
+			GSTexture* const sprox1 = src2->GetLayerProxyTexture(1);
+			const bool proxies_real = (dprox1 != tex.get()) && (sprox1 != src2.get()) &&
+									  static_cast<GSTextureVK*>(dprox1)->GetBaseArrayLayer() == 1u;
+			Console.WriteLn("(VR) MV self-test: (6) layer-1 proxies are real distinct objects w/ baseLayer=1: %s",
+				proxies_real ? "yes" : "NO — routes b/c/d below are NOT testing what they claim");
+
+			reset_dst();
+			const bool z_read = read_both(g0, g1);
+			const bool z_ok = z_read && eq4(g0, COL_RED) && eq4(g1, COL_GRN);
+			Console.WriteLn("(VR) MV self-test: (6-baseline) reset only, no write: layer0=%s layer1=%s -> %s",
+				z_read ? name4(g0) : "READ-FAIL", z_read ? name4(g1) : "READ-FAIL",
+				z_ok ? "PASS (harness sound)" : "FAIL — HARNESS BROKEN, ignore b/c/d below");
+
+			reset_dst();
+			StretchRectAuto(src1.get(), uv_full, tex->GetLayerProxyTexture(1), px_full, Nearest);
+			const bool b_read = read_both(g0, g1);
+			const bool b_ok = b_read && eq4(g1, COL_BLU) && eq4(g0, COL_RED);
+			Console.WriteLn("(VR) MV self-test: (6b) 1L->proxy(1) StretchRect: layer0=%s layer1=%s -> %s",
+				b_read ? name4(g0) : "READ-FAIL", b_read ? name4(g1) : "READ-FAIL", b_ok ? "PASS" : "FAIL");
+
+			reset_dst();
+			StretchRectAuto(src2->GetLayerProxyTexture(1), uv_full, tex->GetLayerProxyTexture(1), px_full, Nearest);
+			const bool c_read = read_both(g0, g1);
+			const bool c_ok = c_read && eq4(g1, COL_YEL) && eq4(g0, COL_RED);
+			Console.WriteLn("(VR) MV self-test: (6c) proxy(1)->proxy(1) StretchRect: layer0=%s layer1=%s -> %s",
+				c_read ? name4(g0) : "READ-FAIL", c_read ? name4(g1) : "READ-FAIL", c_ok ? "PASS" : "FAIL");
+
+			reset_dst();
+			CopyRect(src1.get(), tex->GetLayerProxyTexture(1), px_fulli, 0, 0);
+			const bool d_read = read_both(g0, g1);
+			const bool d_ok = d_read && eq4(g1, COL_BLU) && eq4(g0, COL_RED);
+			Console.WriteLn("(VR) MV self-test: (6d) 1L->proxy(1) CopyRect: layer0=%s layer1=%s -> %s",
+				d_read ? name4(g0) : "READ-FAIL", d_read ? name4(g1) : "READ-FAIL", d_ok ? "PASS" : "FAIL");
+
+			reset_dst();
+			StretchRectAuto(src2.get(), uv_full, tex.get(), px_full, Nearest);
+			const bool a_read = read_both(g0, g1);
+			Console.WriteLn("(VR) MV self-test: (6a) whole 2L->2L StretchRect: layer0=%s layer1=%s%s",
+				a_read ? name4(g0) : "READ-FAIL", a_read ? name4(g1) : "READ-FAIL",
+				!a_read ? "" : (eq4(g1, COL_YEL) ? "  [per-layer: layer1 got src layer1]" :
+					(eq4(g1, COL_GRN) ? "  [*** layer1 NOT WRITTEN — matches the known layer-1 defect ***]" :
+						(eq4(g1, COL_BLU) ? "  [broadcast: layer1 got src layer0]" : "  [unexpected]"))));
+
+			proxy_ok = proxies_real && b_ok && c_ok && d_ok;
+		}
+	}
+	Console.WriteLn("(VR) MV self-test: writes into a layer proxy reach the parent's layer: %s",
+		ok ? (proxy_ok ? "yes" : "NO") : "skipped (prereqs failed)");
+	ok = ok && proxy_ok;
+
+
+	if (fb != VK_NULL_HANDLE)
+		vkDestroyFramebuffer(m_device, fb, nullptr);
+	if (rp != VK_NULL_HANDLE)
+		vkDestroyRenderPass(m_device, rp, nullptr);
+	tex.reset();
+
+	Console.WriteLn("(VR) MV self-test: RESULT: %s", ok ? "PASS" : "FAIL");
 }
 
 void GSDeviceVK::Destroy()
@@ -3152,6 +3552,9 @@ void GSDeviceVK::Destroy()
 		ExecuteCommandBuffer(false);
 		WaitForGPUIdle();
 	}
+#ifdef ENABLE_OPENXR
+	VR::OnGSDeviceDestroyed();
+#endif
 
 	m_swap_chain.reset();
 
@@ -3722,6 +4125,9 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 
 	if (!AcquireWindow(true))
 		return false;
+#ifdef ENABLE_OPENXR
+	VR::BeginVulkanBootstrap();
+#endif
 
 	// Libretro context sharing: the VkInstance comes from the frontend's
 	// negotiation interface. Function loading still goes through the wrapped
@@ -3795,6 +4201,17 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 		INFO_LOG("{} GPU requested, using first ({})", is_default_gpu ? "Default" : "No", gpus[0].second.name);
 		m_physical_device = gpus[0].first;
 	}
+#ifdef ENABLE_OPENXR
+	if (VR::VulkanBootstrapActive())
+	{
+		const VkPhysicalDevice xr_physical_device = VR::GetXrVulkanPhysicalDevice(m_instance);
+		if (xr_physical_device != VK_NULL_HANDLE && xr_physical_device != m_physical_device)
+		{
+			INFO_LOG("(VR) Overriding adapter selection with the OpenXR runtime's physical device.");
+			m_physical_device = xr_physical_device;
+		}
+	}
+#endif
 
 	// Read device physical memory properties, we need it for allocating buffers
 	vkGetPhysicalDeviceProperties(m_physical_device, &m_device_properties);
@@ -3841,6 +4258,10 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 		return false;
 
 	VKShaderCache::Create();
+#ifdef ENABLE_OPENXR
+	if (VR::VulkanBootstrapActive())
+		VR::OnVulkanDeviceCreated(m_instance, m_physical_device, m_device, m_graphics_queue_family_index, m_graphics_queue);
+#endif
 
 	if (surface != VK_NULL_HANDLE)
 	{
@@ -4632,16 +5053,16 @@ VkFormat GSDeviceVK::LookupNativeFormat(GSTexture::Format format) const
 		VK_FORMAT_D32_SFLOAT;
 }
 
-GSTexture* GSDeviceVK::CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format)
+GSTexture* GSDeviceVK::CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers)
 {
-	std::unique_ptr<GSTexture> tex = GSTextureVK::Create(usage, format, width, height, levels);
+	std::unique_ptr<GSTexture> tex = GSTextureVK::Create(usage, format, width, height, levels, static_cast<int>(layers));
 	if (!tex)
 	{
 		// We're probably out of vram, try flushing the command buffer to release pending textures.
 		PurgePool();
 		ExecuteCommandBufferAndRestartRenderPass(
 			true, "Couldn't allocate texture.");
-		tex = GSTextureVK::Create(usage, format, width, height, levels);
+		tex = GSTextureVK::Create(usage, format, width, height, levels, static_cast<int>(layers));
 	}
 
 	return tex.release();
@@ -4669,7 +5090,9 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 	// Source is cleared, if destination is a render target, we can carry the clear forward.
 	if (sTexVK->GetState() == GSTexture::State::Cleared)
 	{
-		if (dTexVK->IsRenderTargetOrDepthStencil())
+		if (dTexVK->IsRenderTargetOrDepthStencil() &&
+			dTexVK->GetArrayLayers() == sTexVK->GetArrayLayers() &&
+			(full_draw_copy || dTexVK->GetArrayLayers() < 2))
 		{
 			if (ProcessClearsBeforeCopy(sTex, dTex, full_draw_copy))
 				return;
@@ -4712,6 +5135,15 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 	}
 
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
+	{
+		static const bool s_vr_drawcensus = (std::getenv("PCSX2_VR_DRAWCENSUS") != nullptr);
+		if (s_vr_drawcensus && sTexVK->GetArrayLayers() >= 2 && dTexVK->GetArrayLayers() < 2)
+		{
+			DevCon.WriteLn("(VR) CENSUS s2m-copy %dx%d rect=%d,%d-%d,%d dst=%dx%d fmt=%d",
+				sTexVK->GetWidth(), sTexVK->GetHeight(), r.x, r.y, r.z, r.w,
+				dTexVK->GetWidth(), dTexVK->GetHeight(), static_cast<int>(dTexVK->GetFormat()));
+		}
+	}
 
 	// if the destination has been cleared, and we're not overwriting the whole thing, commit the clear first
 	// (the area outside of where we're copying to)
@@ -4723,9 +5155,18 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 		(sTexVK->IsDepthStencil()) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 	const VkImageAspectFlags dst_aspect =
 		(dTexVK->IsDepthStencil()) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-	const VkImageCopy ic = {{src_aspect, 0u, 0u, 1u}, {r.left, r.top, 0u}, {dst_aspect, 0u, 0u, 1u},
+	const u32 copy_layers = std::min(sTexVK->GetArrayLayers(), dTexVK->GetArrayLayers());
+	VkImageCopy ics[2] = {{{src_aspect, 0u, sTexVK->GetBaseArrayLayer(), copy_layers}, {r.left, r.top, 0u},
+		{dst_aspect, 0u, dTexVK->GetBaseArrayLayer(), copy_layers},
 		{static_cast<s32>(destX), static_cast<s32>(destY), 0u},
-		{static_cast<u32>(r.width()), static_cast<u32>(r.height()), 1u}};
+		{static_cast<u32>(r.width()), static_cast<u32>(r.height()), 1u}}};
+	u32 num_regions = 1;
+	if (dTexVK->GetArrayLayers() > sTexVK->GetArrayLayers())
+	{
+		ics[1] = ics[0];
+		ics[1].dstSubresource.baseArrayLayer = dTexVK->GetBaseArrayLayer() + 1;
+		num_regions = 2;
+	}
 
 	EndRenderPass();
 
@@ -4737,9 +5178,115 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 		(dTexVK == sTexVK) ? GSTextureVK::Layout::TransferSelf : GSTextureVK::Layout::TransferDst);
 
 	vkCmdCopyImage(GetCurrentCommandBuffer(), sTexVK->GetImage(), sTexVK->GetVkLayout(), dTexVK->GetImage(),
-		dTexVK->GetVkLayout(), 1, &ic);
+		dTexVK->GetVkLayout(), num_regions, ics);
 
 	dTexVK->SetState(GSTexture::State::Dirty);
+}
+
+void GSDeviceVK::VRProbeLayers(GSTexture* tex, const char* tag)
+{
+	GSTextureVK* const texVK = static_cast<GSTextureVK*>(tex);
+	if (!texVK)
+		return;
+
+	if (texVK->GetFormat() != GSTexture::Format::Color)
+	{
+		Console.WriteLn("(VR) PROBE %s: skipped, format=%d is not Color", tag, static_cast<int>(texVK->GetFormat()));
+		return;
+	}
+
+	const u32 layers = texVK->GetArrayLayers();
+	const int w = texVK->GetWidth();
+	const int h = texVK->GetHeight();
+	const GSVector4i full = GSVector4i(0, 0, w, h);
+
+	for (u32 l = 0; l < layers; l++)
+	{
+		GSTexture* const layer_tex = (layers > 1) ? texVK->GetLayerProxyTexture(l) : static_cast<GSTexture*>(texVK);
+
+		std::unique_ptr<GSDownloadTextureVK> dl = GSDownloadTextureVK::Create(w, h, GSTexture::Format::Color);
+		if (!dl)
+		{
+			Console.WriteLn("(VR) PROBE %s: layer %u — download alloc FAILED", tag, l);
+			continue;
+		}
+
+		dl->CopyFromTexture(full, layer_tex, full, 0, false);
+		dl->Flush();
+		if (!dl->Map(full))
+		{
+			Console.WriteLn("(VR) PROBE %s: layer %u — map FAILED", tag, l);
+			continue;
+		}
+
+		u64 sum = 0;
+		u64 nonzero = 0;
+		u64 sum_even = 0, sum_odd = 0;
+		const u8* base = dl->GetMapPointer();
+		const u32 pitch = dl->GetMapPitch();
+		for (int y = 0; y < h; y++)
+		{
+			const u8* row = base + static_cast<size_t>(y) * pitch;
+			u64 row_sum = 0;
+			for (int x = 0; x < w; x++)
+			{
+				const u8* px = row + static_cast<size_t>(x) * 4u;
+				const u32 rgb = static_cast<u32>(px[0]) + px[1] + px[2];
+				row_sum += rgb;
+				nonzero += (rgb != 0) ? 1u : 0u;
+			}
+			sum += row_sum;
+			((y & 1) ? sum_odd : sum_even) += row_sum;
+		}
+		dl->Unmap();
+
+		const double px_count = static_cast<double>(w) * static_cast<double>(h);
+		const double half_px = px_count / 2.0;
+		Console.WriteLn("(VR) PROBE %s: layer %u/%u %dx%d mean=%.3f even=%.3f odd=%.3f nonzero=%.2f%% obj=%p img=%p",
+			tag, l, layers, w, h, static_cast<double>(sum) / (px_count * 3.0),
+			static_cast<double>(sum_even) / (half_px * 3.0), static_cast<double>(sum_odd) / (half_px * 3.0),
+			100.0 * static_cast<double>(nonzero) / px_count, static_cast<const void*>(texVK),
+			static_cast<const void*>(texVK->GetImage()));
+	}
+}
+
+void GSDeviceVK::BroadcastLayer0(GSTexture* tex, const GSVector4& dRect)
+{
+	GSTextureVK* const texVK = static_cast<GSTextureVK*>(tex);
+	if (!texVK || texVK->GetArrayLayers() < 2)
+		return;
+
+	const GSVector4 mn = dRect.min(dRect.zwxy());
+	const GSVector4 mx = dRect.max(dRect.zwxy());
+	const GSVector4i r = GSVector4i(mn.floor()).blend32<0xC>(GSVector4i(mx.ceil()))
+							 .rintersect(GSVector4i(0, 0, texVK->GetWidth(), texVK->GetHeight()));
+	if (r.rempty())
+		return;
+
+	if (texVK->GetState() == GSTexture::State::Cleared)
+		return;
+
+	static const bool s_vr_chainlog = (std::getenv("PCSX2_VR_CHAINLOG") != nullptr);
+	if (s_vr_chainlog)
+	{
+		Console.WriteLn("(VR) CHAINLOG bcast0->1 %dx%d @(%d,%d) %dx%d",
+			texVK->GetWidth(), texVK->GetHeight(), r.x, r.y, r.width(), r.height());
+	}
+
+	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
+	EndRenderPass();
+
+	texVK->SetUseFenceCounter(GetCurrentFenceCounter());
+	texVK->TransitionToLayout(GSTextureVK::Layout::TransferSelf);
+
+	const VkImageAspectFlags aspect =
+		texVK->IsDepthStencil() ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	const VkImageCopy ic = {{aspect, 0u, texVK->GetBaseArrayLayer(), 1u}, {r.left, r.top, 0},
+		{aspect, 0u, texVK->GetBaseArrayLayer() + 1u, 1u}, {r.left, r.top, 0},
+		{static_cast<u32>(r.width()), static_cast<u32>(r.height()), 1u}};
+
+	vkCmdCopyImage(GetCurrentCommandBuffer(), texVK->GetImage(), texVK->GetVkLayout(), texVK->GetImage(),
+		texVK->GetVkLayout(), 1, &ic);
 }
 
 void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
@@ -4775,6 +5322,23 @@ void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 void GSDeviceVK::DoDrawMultiStretchRects(
 	const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
+	if (dTex && dTex->GetArrayLayers() >= 2)
+	{
+		bool any_layered_src = false;
+		for (u32 i = 0; i < num_rects; i++)
+			any_layered_src |= (rects[i].src && rects[i].src->GetArrayLayers() >= 2);
+		if (any_layered_src)
+		{
+			std::vector<MultiStretchRect> lrects(rects, rects + num_rects);
+			for (u32 l = 0; l < dTex->GetArrayLayers(); l++)
+			{
+				for (u32 i = 0; i < num_rects; i++)
+					lrects[i].src = rects[i].src->GetLayerProxyTexture(l);
+				DrawMultiStretchRects(lrects.data(), num_rects, dTex->GetLayerProxyTexture(l), shader);
+			}
+			return;
+		}
+	}
 	GSTexture* last_tex = rects[0].src;
 	Filter last_filter = rects[0].filter;
 	u8 last_wmask = rects[0].wmask.wrgba;
@@ -4812,6 +5376,18 @@ void GSDeviceVK::DoDrawMultiStretchRects(
 	}
 
 	DoMultiStretchRects(rects + first, count, static_cast<GSTextureVK*>(dTex), shader);
+	static const bool s_no_msr_bcast = (std::getenv("PCSX2_VR_NO_MSR_BROADCAST") != nullptr);
+	if (!s_no_msr_bcast && dTex && dTex->GetArrayLayers() >= 2)
+	{
+		GSVector4 mn = rects[0].dst_rect.min(rects[0].dst_rect.zwxy());
+		GSVector4 mx = rects[0].dst_rect.max(rects[0].dst_rect.zwxy());
+		for (u32 i = 1; i < num_rects; i++)
+		{
+			mn = mn.min(rects[i].dst_rect.min(rects[i].dst_rect.zwxy()));
+			mx = mx.max(rects[i].dst_rect.max(rects[i].dst_rect.zwxy()));
+		}
+		BroadcastLayer0(dTex, GSVector4(mn.x, mn.y, mx.z, mx.w));
+	}
 }
 
 void GSDeviceVK::DoMultiStretchRects(
@@ -7417,13 +7993,13 @@ void GSDeviceVK::DestroyResources()
 		vmaDestroyAllocator(m_allocator);
 }
 
-VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
+VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel, bool multiview)
 {
 	// Precompile workers call this too. The lock covers the map only; two threads that miss on the
 	// same key both compile it and the loser's module is dropped.
 	{
 		std::unique_lock lock(m_tfx_shader_mutex);
-		const auto it = m_tfx_vertex_shaders.find(sel.key);
+		const auto it = m_tfx_vertex_shaders.find(VertexShaderKey(sel, multiview));
 		if (it != m_tfx_vertex_shaders.end())
 			return it->second;
 	}
@@ -7439,6 +8015,7 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
 	AddMacro(ss, "VS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
+	AddMacro(ss, "VS_MULTIVIEW", multiview);
 	ss << m_tfx_source;
 	std::string source = ss.str();
 	source_timer.reset();
@@ -7448,7 +8025,7 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 		Vulkan::SetObjectName(m_device, mod, "TFX Vertex %08X", sel.key);
 
 	std::unique_lock lock(m_tfx_shader_mutex);
-	const auto [it, inserted] = m_tfx_vertex_shaders.emplace(sel.key, mod);
+	const auto [it, inserted] = m_tfx_vertex_shaders.emplace(VertexShaderKey(sel, multiview), mod);
 	if (!inserted && mod != VK_NULL_HANDLE)
 		vkDestroyShaderModule(m_device, mod, nullptr);
 	return it->second;
@@ -7528,6 +8105,9 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_PABE", sel.pabe);
 	AddMacro(ss, "PS_SCANMSK", sel.scanmsk);
 	AddMacro(ss, "PS_TEX_IS_FB", sel.tex_is_fb);
+	AddMacro(ss, "PS_TEX_IN_ARRAY", sel.tex_in_array);
+	AddMacro(ss, "PS_RT_IN_ARRAY", sel.rt_in_array);
+	AddMacro(ss, "PS_DEPTH_IN_ARRAY", sel.depth_in_array);
 	AddMacro(ss, "PS_NO_COLOR", sel.no_color);
 	AddMacro(ss, "PS_NO_COLOR1", sel.no_color1);
 	AddMacro(ss, "PS_BLEND_FACTOR_IN_ALPHA", sel.blend_factor_in_alpha);
@@ -7571,7 +8151,7 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 		pps.no_color1 = true;
 	}
 
-	VkShaderModule vs = GetTFXVertexShader(p.vs);
+	VkShaderModule vs = GetTFXVertexShader(p.vs, p.multiview);
 	VkShaderModule fs = GetTFXFragmentShader(pps);
 	if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
@@ -7592,7 +8172,7 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 			GetTFXRenderPass(p.rt, p.ds, p.ps.colclip_hw, p.dss.date,
 				p.IsRTFeedbackLoop(), p.IsTestingAndSamplingDepth(),
 				p.rt ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-				p.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+				p.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE, p.multiview),
 			0);
 	}
 
@@ -8945,8 +9525,9 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_TEX)
 		{
 			dsub.AddCombinedImageSamplerDescriptorWrite(ds, TFX_TEXTURE_TEXTURE,
-				m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetView(), m_tfx_sampler,
-				m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetVkLayout());
+				m_tfx_tex_in_array ? m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetView() :
+									 m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetViewForSampling(),
+				m_tfx_sampler, m_tfx_textures[TFX_TEXTURE_TEXTURE]->GetVkLayout());
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_PALETTE)
 		{
@@ -8962,7 +9543,9 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 			}
 			else
 			{
-				dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_RT, m_tfx_textures[TFX_TEXTURE_RT]->GetView(),
+				dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_RT,
+					m_tfx_rt_in_array ? m_tfx_textures[TFX_TEXTURE_RT]->GetView() :
+										m_tfx_textures[TFX_TEXTURE_RT]->GetViewForSampling(),
 					m_tfx_textures[TFX_TEXTURE_RT]->GetVkLayout());
 			}
 		}
@@ -8980,7 +9563,9 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 			}
 			else
 			{
-				dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_DEPTH, m_tfx_textures[TFX_TEXTURE_DEPTH]->GetView(),
+				dsub.AddImageDescriptorWrite(ds, TFX_TEXTURE_DEPTH,
+					m_tfx_depth_in_array ? m_tfx_textures[TFX_TEXTURE_DEPTH]->GetView() :
+										   m_tfx_textures[TFX_TEXTURE_DEPTH]->GetViewForSampling(),
 					m_tfx_textures[TFX_TEXTURE_DEPTH]->GetVkLayout());
 			}
 		}
@@ -9028,7 +9613,7 @@ bool GSDeviceVK::ApplyUtilityState(bool already_execed)
 		if (m_use_push_descriptors)
 		{
 			dsub.AddCombinedImageSamplerDescriptorWrite(
-				VK_NULL_HANDLE, 0, m_utility_texture->GetView(), m_utility_sampler, m_utility_texture->GetVkLayout());
+				VK_NULL_HANDLE, 0, m_utility_texture->GetViewForSampling(), m_utility_sampler, m_utility_texture->GetVkLayout());
 			dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_utility_pipeline_layout, 0, false);
 		}
 		else
@@ -9048,7 +9633,7 @@ bool GSDeviceVK::ApplyUtilityState(bool already_execed)
 				return ApplyUtilityState(true);
 			}
 			dsub.AddCombinedImageSamplerDescriptorWrite(
-				ds, 0, m_utility_texture->GetView(), m_utility_sampler, m_utility_texture->GetVkLayout());
+				ds, 0, m_utility_texture->GetViewForSampling(), m_utility_sampler, m_utility_texture->GetVkLayout());
 			dsub.Update(m_device);
 			vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_utility_pipeline_layout, 0, 1, &ds, 0, nullptr);
 		}
@@ -9324,6 +9909,30 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// figure out the pipeline
 	PipelineSelector& pipe = m_pipeline_selector;
 	UpdateHWPipelineSelector(config, pipe);
+	{
+		static const bool s_vr_drawcensus = (std::getenv("PCSX2_VR_DRAWCENSUS") != nullptr);
+		if (s_vr_drawcensus && pipe.multiview &&
+			(config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify || colclip_rt ||
+				config.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
+				pipe.IsRTFeedbackLoop() || pipe.IsDepthFeedbackLoop() || config.vs.fst ||
+				(config.rt && config.ds &&
+					config.rt->GetArrayLayers() != config.ds->GetArrayLayers())))
+		{
+			static u32 s_census_n = 0;
+			if (config.vs.fst)
+				DevCon.WriteLn("(VR) CENSUS-FST area=%d,%d-%d,%d verts=%u indices=%u tex=%d abe=%u",
+					config.drawarea.x, config.drawarea.y, config.drawarea.z, config.drawarea.w,
+					config.nverts, config.nindices, config.tex ? 1 : 0,
+					static_cast<u32>(config.blend.enable));
+			DevCon.WriteLn("(VR) CENSUS n=%u colclip_mode=%d colclip_rt=%d date=%d datm=%u ps_date=%u rtl=%u dsl=%u fbl=%u dfbl=%u fst=%u verts=%u",
+				++s_census_n, static_cast<int>(config.colclip_mode), colclip_rt ? 1 : 0,
+				static_cast<int>(config.destination_alpha), static_cast<u32>(config.datm),
+				static_cast<u32>(config.ps.date),
+				config.rt ? config.rt->GetArrayLayers() : 0u, config.ds ? config.ds->GetArrayLayers() : 0u,
+				pipe.IsRTFeedbackLoop() ? 1u : 0u, pipe.IsDepthFeedbackLoop() ? 1u : 0u,
+				static_cast<u32>(config.vs.fst), config.nverts);
+		}
+	}
 
 	// now blit the colclip texture back to the original target
 	if (colclip_rt)
@@ -9349,7 +9958,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 				BeginClearRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
 										 pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_CLEAR,
-										 pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+										 pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+										 pipe.multiview),
 					draw_rt->GetRect(), cvs, cv_count);
 				draw_rt->SetState(GSTexture::State::Dirty);
 			}
@@ -9357,7 +9967,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			{
 				BeginRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
 									pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_LOAD,
-									pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+									pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+									pipe.multiview),
 					draw_rt->GetRect());
 			}
 
@@ -9430,7 +10041,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		{
 			config.colclip_update_area = config.drawarea;
 			EndRenderPass();
-			colclip_rt = static_cast<GSTextureVK*>(CreateFeedbackTarget(rtsize.x, rtsize.y, GSTexture::Format::ColorClip, false));
+			colclip_rt = static_cast<GSTextureVK*>(CreateFeedbackTarget(
+				rtsize.x, rtsize.y, GSTexture::Format::ColorClip, false, true, draw_rt->GetArrayLayers()));
 			if (!colclip_rt)
 			{
 				Console.Warning("VK: Failed to allocate ColorClip render target, aborting draw.");
@@ -9610,7 +10222,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			ds_op = VK_ATTACHMENT_LOAD_OP_LOAD;
 		const VkRenderPass rp = GetTFXRenderPass(pipe.rt, pipe.ds, pipe.ps.colclip_hw,
 			config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil, pipe.IsRTFeedbackLoop(),
-			pipe.IsTestingAndSamplingDepth(), rt_op, ds_op);
+			pipe.IsTestingAndSamplingDepth(), rt_op, ds_op, pipe.multiview);
 		const bool is_clearing_rt = (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR || ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
 
 		// Only draw to the active area of the colclip hw target. Except when depth is cleared, we need to use the full
@@ -9796,7 +10408,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 				BeginClearRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
 										 pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_CLEAR,
-										 pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+										 pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+										 pipe.multiview),
 					draw_rt->GetRect(), cvs, cv_count);
 				draw_rt->SetState(GSTexture::State::Dirty);
 			}
@@ -9804,7 +10417,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			{
 				BeginRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
 									pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_LOAD,
-									pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+									pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+									pipe.multiview),
 					draw_rt->GetRect());
 			}
 
@@ -9825,7 +10439,20 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelector& pipe)
 {
 	pipe.vs.key = config.vs.key;
+	pipe.multiview = ((config.rt && config.rt->GetArrayLayers() > 1) ||
+						 (config.ds && config.ds->GetArrayLayers() > 1));
 	pipe.ps.key_hi = config.ps.key_hi;
+	static const bool s_no_tex_array = (std::getenv("PCSX2_VR_NO_TEX_ARRAY") != nullptr);
+	m_tfx_tex_in_array = (!s_no_tex_array && pipe.multiview && config.tex && config.tex->GetArrayLayers() > 1);
+	pipe.ps.tex_in_array = m_tfx_tex_in_array;
+	const bool fb_layout_sampled = UseFeedbackLoopLayout();
+	static const bool s_no_fb_array = (std::getenv("PCSX2_VR_NO_FEEDBACK_ARRAY") != nullptr);
+	m_tfx_rt_in_array = (!s_no_fb_array && fb_layout_sampled && pipe.multiview && config.rt &&
+						 config.rt->GetArrayLayers() > 1 && !config.ps.HasColorROV());
+	pipe.ps.rt_in_array = m_tfx_rt_in_array;
+	m_tfx_depth_in_array = (!s_no_fb_array && fb_layout_sampled && pipe.multiview && config.ds &&
+							config.ds->GetArrayLayers() > 1 && !config.ps.HasDepthROV());
+	pipe.ps.depth_in_array = m_tfx_depth_in_array;
 	pipe.ps.key_lo = config.ps.key_lo;
 	pipe.dss.key = config.ps.HasDepthROV() ? GSHWDrawConfig::DepthStencilSelector::NoDepth().key : config.depth.key;
 	pipe.bs.key = config.ps.HasColorROV() ? GSHWDrawConfig::BlendState().key : config.blend.key;
