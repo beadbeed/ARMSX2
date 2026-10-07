@@ -100,6 +100,12 @@ struct GSMTLMainVSUniform
 	vector_float2 point_size;
 	uint max_depth;
 	float line_aa1_width;
+	// Mirrors GSHWDrawConfig::VSConstantBuffer's stereo fields; Metal doesn't use them.
+	vector_float2 vr_stereo;
+	uint vr_map_mode;
+	uint vr_band_count;
+	vector_float4 vr_splits;
+	vector_float4 vr_band[4];
 };
 
 struct GSMTLMainPSUniform

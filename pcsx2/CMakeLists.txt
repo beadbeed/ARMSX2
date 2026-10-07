@@ -786,6 +786,18 @@ if(USE_OPENGL)
 	endif()
 endif()
 
+# Outbreak VR: stereo state shared by every renderer (only Vulkan acts on it).
+if(ENABLE_VR_STEREO)
+	list(APPEND pcsx2GSSources
+		VR/StereoSettings.cpp
+		VR/StereoState.cpp
+	)
+	list(APPEND pcsx2GSHeaders
+		VR/StereoSettings.h
+		VR/StereoState.h
+	)
+endif()
+
 if(USE_VULKAN)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/Vulkan/GSDeviceVK.cpp

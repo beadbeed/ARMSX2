@@ -1110,6 +1110,13 @@ struct alignas(16) GSHWDrawConfig
 		GSVector2 point_size;
 		u32 max_depth;
 		float line_aa1_width;
+		// Stereo (VR) displacement, see VR/StereoState.h. All zero when stereo is off,
+		// which leaves every vertex where it would be without VR.
+		GSVector2 vr_stereo; // x = signed per-eye separation, y = convergence (1/w)
+		u32 vr_map_mode; // 0 linear, 1 bands, 2 log
+		u32 vr_band_count;
+		GSVector4 vr_splits; // band split Q values; w = eye sign for banded maps
+		GSVector4 vr_band[4]; // per-band conv/sep/bias; .w lanes carry HUD offset and the Z->Q fit
 		__fi VSConstantBuffer()
 		{
 			memset(static_cast<void*>(this), 0, sizeof(*this));

@@ -285,6 +285,9 @@ private:
 
 	void DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, const GSVector2i& rtsize,
 		const GSVector2i& unscaled_size, float& vs_scale_x, float& vs_scale_y);
+#ifdef ENABLE_VR
+	void DetermineVRStereoConfig(const GSVector2i& unscaled_size);
+#endif
 	void DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
 
 	void GetForcedROVUsage(bool& color_cov, bool& depth_rov); // Whether having color or depth with the current config forces the other.

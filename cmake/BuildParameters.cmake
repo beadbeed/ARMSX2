@@ -42,6 +42,10 @@ if(NOT APPLE)
 	option(USE_OPENGL "Enable OpenGL GS renderer" ON)
 endif()
 option(USE_VULKAN "Enable Vulkan GS renderer" ON)
+# Outbreak VR: stereo 3D in the hardware renderer. The per-eye path only runs on
+# the Vulkan renderer; with stereo off (the default at runtime) every renderer
+# behaves exactly as without this option.
+option(ENABLE_VR_STEREO "Enable stereo 3D (VR) rendering support in the Vulkan GS renderer" ON)
 # What the GL renderer asks the host for. Android is GL ES whether this is set
 # or not; it exists for the other platforms that have only ES - webOS, and the
 # embedded frontends - where a desktop GL request is refused and the core then
@@ -276,6 +280,11 @@ endif()
 
 set(CONFIG_REL_NO_DEB $<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>)
 set(CONFIG_ANY_REL $<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>,$<CONFIG:RelWithDebInfo>>)
+
+if(ENABLE_VR_STEREO)
+	# Same macro name as PenguinScreen2, whose VR hooks this port follows.
+	list(APPEND PCSX2_DEFS ENABLE_VR)
+endif()
 
 if(WIN32)
 	add_compile_definitions(

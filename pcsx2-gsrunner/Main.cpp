@@ -1172,6 +1172,10 @@ static void PrintCommandLineHelp(const char* progname)
 						 "against <dir> (texture packs). Its own flag rather than a fourth optional word after "
 						 "-custom-driver, because an optional trailing directory is indistinguishable from the dump "
 						 "filename. Only used if -custom-driver is used.\n");
+#ifdef ENABLE_VR
+	std::fprintf(stderr, "  -vr-stereo <sep>,<conv>[,<zdepth>]: Stereo 3D, alternating eyes each frame (Vulkan).\n");
+	std::fprintf(stderr, "  -vr-hud <disparity>: Fixed per-eye offset for screen-space (HUD) draws.\n");
+#endif
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto. 'nullhw' runs "
 						 "GSRendererHW on the deviceless Null device -- a per-frame CPU-only cost of the hardware "
 						 "renderer path (GIF decode, vertex kick, texture cache, everything Draw() does to build a "
@@ -1559,6 +1563,39 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				Console.WriteLn("Looping dump playback %d times.", s_loop_count);
 				continue;
 			}
+#ifdef ENABLE_VR
+			else if (CHECK_ARG_PARAM("-vr-stereo"))
+			{
+				// sep,conv[,zdepth]: interleaved stereo, one eye per replayed frame, so a looped
+				// one-frame dump yields left and right images on alternate output frames.
+				std::vector<std::string_view> split = StringUtil::SplitString(argv[++i], ',');
+				const std::optional<float> sep = (split.size() > 0) ? StringUtil::FromChars<float>(split[0]) : std::nullopt;
+				const std::optional<float> conv = (split.size() > 1) ? StringUtil::FromChars<float>(split[1]) : std::nullopt;
+				const std::optional<int> zdepth = (split.size() > 2) ? StringUtil::FromChars<int>(split[2]) : std::optional<int>(1);
+				if (!sep.has_value() || !conv.has_value() || !zdepth.has_value())
+				{
+					ArgError("-vr-stereo: expected <separation>,<convergence>[,<zdepth 0|1>].");
+					return false;
+				}
+				s_settings_interface.SetBoolValue("VR", "StereoEnable", true);
+				s_settings_interface.SetBoolValue("VR", "InterleaveEyes", true);
+				s_settings_interface.SetFloatValue("VR", "Separation", sep.value());
+				s_settings_interface.SetFloatValue("VR", "Convergence", conv.value());
+				s_settings_interface.SetBoolValue("VR", "ZDrivenDepth", zdepth.value() != 0);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-vr-hud"))
+			{
+				const std::optional<float> hud = StringUtil::FromChars<float>(argv[++i]);
+				if (!hud.has_value())
+				{
+					ArgError("-vr-hud: expected a disparity for screen-space draws.");
+					return false;
+				}
+				s_settings_interface.SetFloatValue("VR", "CollimateDisparity", hud.value());
+				continue;
+			}
+#endif
 			else if (CHECK_ARG_PARAM("-renderer"))
 			{
 				const char* rname = argv[++i];

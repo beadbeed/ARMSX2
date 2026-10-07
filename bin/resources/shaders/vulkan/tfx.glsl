@@ -7,6 +7,14 @@
 
 #if defined(VERTEX_SHADER)
 
+// Stereo (VR): one draw renders both eyes when the target is a 2-layer array.
+#ifndef VS_MULTIVIEW
+#define VS_MULTIVIEW 0
+#endif
+#if VS_MULTIVIEW
+#extension GL_EXT_multiview : require
+#endif
+
 #ifndef VS_EXPAND_NONE
 #define VS_EXPAND_NONE 0
 #define VS_EXPAND_POINT 1
@@ -25,6 +33,11 @@ layout(std140, set = 0, binding = 0) uniform cb0
 	vec2 PointSize;
 	uint MaxDepth;
 	float LineAA1Width;
+	vec2 vr_stereo;
+	uint vr_map_mode;
+	uint vr_band_count;
+	vec4 vr_splits;
+	vec4 vr_band[4];
 };
 
 layout(location = 0) out VSOutput
@@ -41,6 +54,63 @@ layout(location = 0) out VSOutput
 	float inv_cov; // We use the inverse to make it simpler to interpolate.
 	flat uint interior; // 1 for triangle interior; 0 for edge;
 } vsOut;
+
+// Stereo (VR) displacement, ported from PenguinScreen2. A vertex moves sideways by
+// sep * (1 - conv * q), q = 1/w: the shift a camera offset by one eye would see,
+// clamped at the convergence plane so nothing pops out of the screen. Draws with no
+// usable Q take q from the per-frame Z->1/w fit (vr_band[3].w != 0). All constants
+// are zero when stereo is off.
+#if !VS_FST
+float vr_stereo_disp(float q_in, float z_norm)
+{
+	float q = q_in;
+	if (vr_band[3].w != 0.0f)
+		q = max(vr_band[2].w * (z_norm - vr_band[1].w), 0.0f);
+
+	if (vr_map_mode == 0u)
+	{
+		return vr_stereo.x * max(0.0f, 1.0f - vr_stereo.y * q);
+	}
+
+	if (vr_map_mode == 2u)
+	{
+		float w = 1.0f / max(q, 1e-8f);
+		float t = clamp(log(w / vr_band[0].x) / log(vr_band[0].y / vr_band[0].x), 0.0f, 1.0f);
+		return (vr_band[0].z * t) * vr_splits.w;
+	}
+
+	vec4 band;
+	if      (q >= vr_splits.x) band = vr_band[0];
+	else if (q >= vr_splits.y) band = vr_band[1];
+	else if (q >= vr_splits.z) band = vr_band[2];
+	else                       band = vr_band[3];
+
+	float d = band.z + band.y * (1.0f - band.x * q);
+	return max(0.0f, d) * vr_splits.w;
+}
+
+float vr_eye_sign()
+{
+	#if VS_MULTIVIEW
+		return (gl_ViewIndex == 0) ? -1.0f : 1.0f;
+	#else
+		return 1.0f; // single-eye target: the CPU signs vr_stereo.x per eye
+	#endif
+}
+#endif
+
+#if VS_FST
+// Screen-space draws (HUD, menus) get one fixed offset per eye instead of depth.
+float vr_collimate_signed()
+{
+	#if VS_MULTIVIEW
+		float vr_coll_sign = (gl_ViewIndex == 0) ? -1.0f : 1.0f;
+	#else
+		float vr_coll_sign = 1.0f;
+	#endif
+	return vr_coll_sign * vr_band[0].w;
+}
+#endif
 
 #if VS_EXPAND == VS_EXPAND_NONE
 
@@ -66,6 +136,14 @@ void main()
 	gl_Position.xy = gl_Position.xy * vec2(VertexScale.x, -VertexScale.y) - vec2(VertexOffset.x, -VertexOffset.y);
 	gl_Position.z *= exp2(-32.0f);		// integer->float depth
 	gl_Position.y = -gl_Position.y;
+
+	#if !VS_FST
+		if (vr_stereo.x != 0.0f || vr_map_mode != 0u)
+			gl_Position.x += vr_eye_sign() * vr_stereo_disp(a_q, gl_Position.z);
+	#else
+		if (vr_band[0].w != 0.0f)
+			gl_Position.x += vr_collimate_signed();
+	#endif
 
 #if GPU_PROFILE_MALI
 	// Mali HW bug (PPSSPP EQUAL_WZ_CORRUPTS_DEPTH): clip-space z == w corrupts the
@@ -477,6 +555,13 @@ void main()
 #endif
 
 	gl_Position = vtx.p;
+	#if !VS_FST
+		if (vr_stereo.x != 0.0f || vr_map_mode != 0u)
+			gl_Position.x += vr_eye_sign() * vr_stereo_disp(vtx.t.w, gl_Position.z);
+	#else
+		if (vr_band[0].w != 0.0f)
+			gl_Position.x += vr_collimate_signed();
+	#endif
 #if GPU_PROFILE_MALI
 	// Mali EQUAL_WZ_CORRUPTS_DEPTH nudge (VS_EXPAND path); see the direct path above.
 	if (gl_Position.z == gl_Position.w) gl_Position.z *= 0.999999f;
