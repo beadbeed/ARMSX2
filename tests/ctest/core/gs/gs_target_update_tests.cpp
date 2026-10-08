@@ -116,7 +116,9 @@ namespace
 	protected:
 		using CaptureDevice::DoStretchRect;
 
-		GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override
+		// Single-layer only: these tests run with stereo off.
+		GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format,
+			u32 /*layers*/) override
 		{
 			return new RecordingTexture(usage, width, height, levels, format);
 		}
