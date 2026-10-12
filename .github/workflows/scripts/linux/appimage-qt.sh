@@ -143,3 +143,27 @@ fi
 
 rm -f "$NAME.AppImage"
 $APPIMAGETOOL -v "$OUTDIR" "$NAME.AppImage"
+
+# Outbreak VR (Steam Frame): outbreak-vr.yml sets FRAME_BUNDLE=1 to also ship the
+# extracted AppDir as outbreak-vr-frame-<sha>.tar.zst, with the Frame scripts and
+# frame-xrprobe added after the AppImage is made (so the AppImage is the same as
+# without it). A devkit upload takes a plain folder, so the Frame needs no FUSE,
+# and the folder still works if Valve starts running titles inside the runtime
+# container. Every other caller leaves FRAME_BUNDLE unset and gets only the
+# AppImage above.
+if [[ "${FRAME_BUNDLE:-}" == "1" ]]; then
+	set -o pipefail # a failed tar must not leave a truncated archive behind
+	echo "Adding the Steam Frame files to the AppDir..."
+	install -m 755 "$BUILDDIR/bin/frame-xrprobe" "$OUTDIR/usr/bin/frame-xrprobe"
+	install -m 755 "$PCSX2DIR/frame/frame-probe.sh" "$OUTDIR/frame-probe.sh"
+	install -m 644 "$PCSX2DIR/frame/README-FRAME.md" "$OUTDIR/README-FRAME.md"
+
+	FRAME_NAME="outbreak-vr-frame-$(git -C "$PCSX2DIR" rev-parse --short=10 HEAD)"
+	echo "Packing $FRAME_NAME.tar.zst..."
+	rm -f "$FRAME_NAME.tar.zst"
+	# The top folder is named after the build, so several builds can sit side by
+	# side on the Frame. S: symlink targets inside the AppDir stay as they are.
+	tar -C "$(dirname "$OUTDIR")" --transform "s,^$APPDIRNAME,$FRAME_NAME,S" -cf - "$APPDIRNAME" \
+		| zstd -T0 -12 -q -o "$FRAME_NAME.tar.zst"
+	ls -l "$FRAME_NAME.tar.zst"
+fi

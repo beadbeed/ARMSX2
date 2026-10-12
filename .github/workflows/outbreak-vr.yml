@@ -21,5 +21,38 @@ jobs:
       jobName: "Steam Frame (Linux arm64, 4K pages)"
       artifactPrefixName: "outbreak-vr-linux-arm64-appimage"
       compiler: clang
-      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DENABLE_VR_STEREO=ON"
+      # ENABLE_OPENXR: the vendored static OpenXR loader and frame-xrprobe. Only
+      # this workflow turns it on; every other build leaves it off.
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DENABLE_VR_STEREO=ON -DENABLE_OPENXR=ON"
       buildAppImage: true
+      # Also upload outbreak-vr-frame-<sha>: the AppDir as a tarball, with
+      # frame-xrprobe and the frame/ scripts, for devkit or SSH deployment.
+      frameBundle: true
+
+  # Headset-free checks of the Frame bundle on the image whose glibc (2.39) matches
+  # the Frame's: the probe starts and logs with no OpenXR runtime, nothing in the
+  # AppDir needs a newer glibc, and the scripts parse.
+  frame-smoke:
+    name: Steam Frame smoke test (no headset)
+    needs: frame-linux-arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Download the Frame bundle
+        uses: actions/download-artifact@v8
+        with:
+          pattern: outbreak-vr-frame-*
+          path: dl
+          merge-multiple: true
+
+      # lavapipe gives the probe a Vulkan device to list when there is no runtime.
+      - name: Install tools
+        run: |
+          sudo tools/retry.sh apt-get -o Acquire::ForceIPv4=true update
+          sudo tools/retry.sh apt-get -y install binutils zstd libvulkan1 mesa-vulkan-drivers
+
+      - name: Run the checks
+        run: bash .github/workflows/scripts/linux/frame-smoke.sh dl

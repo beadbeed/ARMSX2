@@ -76,6 +76,12 @@ if(UNIX AND NOT APPLE)
 	add_subdirectory(pcsx2-driverdiag EXCLUDE_FROM_ALL)
 endif()
 
+# frame-xrprobe: a standalone OpenXR/Vulkan probe for the Steam Frame (Outbreak VR).
+# Only with ENABLE_OPENXR, which only outbreak-vr.yml turns on.
+if(ENABLE_OPENXR AND LINUX)
+	add_subdirectory(tools/frame-xrprobe)
+endif()
+
 # eerunner — headless EE (R5900) JIT-vs-interpreter divergence localizer.
 # Built on demand (`--target pcsx2-eerunner`); EXCLUDE_FROM_ALL otherwise.
 if(ENABLE_EERUNNER)

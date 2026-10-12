@@ -27,6 +27,13 @@ on:
         required: false
         type: boolean
         default: false
+      # Outbreak VR only (outbreak-vr.yml): also upload the AppDir as the Steam
+      # Frame bundle (outbreak-vr-frame-<sha>.tar.zst, with frame-xrprobe and the
+      # frame/ scripts). Off for every other caller, whose steps stay the same.
+      frameBundle:
+        required: false
+        type: boolean
+        default: false
       patchesUrl:
         required: false
         type: string
@@ -168,10 +175,15 @@ jobs:
           ccache --evict-older-than 1d
           ccache -s
 
+      - name: Install zstd (Steam Frame bundle)
+        if: inputs.buildAppImage == true && inputs.frameBundle == true
+        run: command -v zstd || sudo tools/retry.sh apt-get -y install zstd
+
       - name: Package AppImage
         if: inputs.buildAppImage == true
         env:
           NAME: ${{ steps.artifact-metadata.outputs.artifact-name }}
+          FRAME_BUNDLE: ${{ inputs.frameBundle && '1' || '' }}
         run: |
           .github/workflows/scripts/linux/appimage-qt.sh "$(realpath .)" "$(realpath ./build)" "$HOME/deps" "$NAME"
           mkdir -p "$GITHUB_WORKSPACE"/ci-artifacts/
@@ -183,3 +195,21 @@ jobs:
         with:
           name: ${{ steps.artifact-metadata.outputs.artifact-name }}
           path: ci-artifacts
+
+      - name: Collect Steam Frame bundle
+        id: frame-bundle
+        if: inputs.buildAppImage == true && inputs.frameBundle == true
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE"/frame-artifacts/
+          f=$(ls outbreak-vr-frame-*.tar.zst)
+          mv "$f" "$GITHUB_WORKSPACE"/frame-artifacts/
+          echo "name=${f%.tar.zst}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Steam Frame bundle
+        if: inputs.buildAppImage == true && inputs.frameBundle == true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.frame-bundle.outputs.name }}
+          path: frame-artifacts
+          # Already zstd-compressed.
+          compression-level: 0
