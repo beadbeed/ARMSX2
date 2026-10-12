@@ -41,6 +41,7 @@ namespace
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #ifdef ENABLE_OPENXR
+#include "VR/VRManager.h"
 #include "VR/VRVulkanBridge.h"
 #endif
 #include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
@@ -3977,7 +3978,24 @@ void GSDeviceVK::EndPresent()
 	// happens only when the toggle, the multiplier, or the swapchain geometry actually changed.
 	// The path goes in first because availability is partly a question about that file.
 	GSLsfg::SetDllPath(GSConfig.LsfgDllPath);
+#ifdef ENABLE_OPENXR
+	// No frame generation when VR is requested: the OpenXR session shares the graphics queue and takes each
+	// frame itself, and generated frames would only reach the flat window.
+	bool lsfg_wanted = GSConfig.LsfgEnabled;
+	if (lsfg_wanted && VR::LaunchRequestedVR())
+	{
+		static bool s_lsfg_vr_logged = false;
+		if (!s_lsfg_vr_logged)
+		{
+			s_lsfg_vr_logged = true;
+			WARNING_LOG("(VR) Frame generation (LSFG) is off while VR is requested.");
+		}
+		lsfg_wanted = false;
+	}
+	if (lsfg_wanted && GSLsfg::IsAvailable())
+#else
 	if (GSConfig.LsfgEnabled && GSLsfg::IsAvailable())
+#endif
 		GSLsfg::Initialize(m_swap_chain.get(), GSConfig.LsfgMultiplier);
 	else if (GSLsfg::IsActive())
 		GSLsfg::Shutdown();

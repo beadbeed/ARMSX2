@@ -25,6 +25,10 @@
 #ifdef ENABLE_VR
 #include "VR/StereoSettings.h"
 #endif
+#ifdef ENABLE_OPENXR
+#include "VR/StereoDump.h"
+#include "VR/VRManager.h"
+#endif
 
 #include "common/Console.h"
 #include "common/FileSystem.h"
@@ -425,6 +429,16 @@ bool GSRenderer::Merge(int field)
 
 	if (GSConfig.ShadeBoost)
 		g_gs_device->ShadeBoost();
+#ifdef ENABLE_OPENXR
+	else if (g_gs_device->GetCurrent())
+	{
+		// Headset-only dark-room lift through the same shader, before VR::EndOfFrame takes the frame.
+		// PresentationLift is false without a running VR session, so flat play is untouched.
+		GSVector4 lift = GSVector4::cxpr(1.0f);
+		if (VR::PresentationLift(&lift))
+			g_gs_device->ShadeBoost(lift);
+	}
+#endif
 
 	if (GSConfig.FXAA)
 		g_gs_device->FXAA();
@@ -1160,6 +1174,12 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		if (BeginPresentFrame(true))
 			EndPresentFrame();
 
+#ifdef ENABLE_OPENXR
+		// A skipped present still owes the headset this frame (a skipped blank frame does not).
+		if (!blank_frame)
+			VR::EnsureFrameSubmitted();
+#endif
+
 		PerformanceMetrics::Update(registers_written, fb_sprite_frame, skip_frame);
 	}
 	else
@@ -1340,6 +1360,13 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 
 		PerformanceMetrics::Update(registers_written, fb_sprite_frame, false);
 	}
+
+#ifdef ENABLE_OPENXR
+	VR::EndOfFrame(blank_frame ? nullptr : g_gs_device->GetCurrent());
+	// After the XR copy: that submit has already put the frame in TransferSrc, so the dump's copy, recorded
+	// into the next GS command buffer, finds the image in the layout it is tracked in.
+	VR::StereoDump::MaybeCapture(blank_frame ? nullptr : g_gs_device->GetCurrent());
+#endif
 
 	// snapshot
 	const GSSnapshotAction snapshot_action =
@@ -1592,6 +1619,10 @@ void GSRenderer::PresentCurrentFrame()
 
 		EndPresentFrame();
 	}
+
+#ifdef ENABLE_OPENXR
+	VR::EndOfFrame(g_gs_device->GetCurrent());
+#endif
 }
 
 void GSTranslateWindowToDisplayCoordinates(float window_x, float window_y, float* display_x, float* display_y)

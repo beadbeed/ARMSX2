@@ -36,6 +36,10 @@
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/SPU2/spu2.h"
 #include "pcsx2/VMManager.h"
+#ifdef ENABLE_OPENXR
+#include "pcsx2/VR/VRManager.h"
+#include "pcsx2/VR/VRProfileDB.h"
+#endif
 
 #include "common/Assertions.h"
 #include "common/Console.h"
@@ -1729,8 +1733,16 @@ void Host::OnInputDeviceDisconnected(const InputBindingKey key, const std::strin
 {
 	emit g_emu_thread->onInputDeviceDisconnected(identifier.empty() ? QString() : QString::fromUtf8(identifier.data(), identifier.size()));
 
+#ifdef ENABLE_OPENXR
+	// As in PenguinScreen2: never pause for a disconnect online (network adapter on), since the server drops a
+	// client that goes quiet. VR controllers come and go with the headset session, so they never pause while the
+	// VR online-safe setting is on.
+	const bool no_pause = VMManager::IsOnlineLocked() || ((key.source_type == InputSourceType::VR) && EmuConfig.VR.OnlineSafe);
+#else
+	constexpr bool no_pause = false;
+#endif
 	if (VMManager::GetState() == VMState::Running && Host::GetBoolSettingValue("UI", "PauseOnControllerDisconnection", false) &&
-		InputManager::HasAnyBindingsForSource(key))
+		InputManager::HasAnyBindingsForSource(key) && !no_pause)
 	{
 		std::string message =
 			fmt::format(TRANSLATE_FS("QtHost", "System paused because controller {} was disconnected."), identifier);
@@ -2124,6 +2136,11 @@ void QtHost::PrintCommandLineHelp(const std::string_view progname)
 #ifdef ENABLE_RAINTEGRATION
 	std::fprintf(stderr, "  -raintegration: Use RAIntegration instead of built-in achievement support.\n");
 #endif
+#ifdef ENABLE_OPENXR
+	std::fprintf(stderr, "  --vr: Arm VR (OpenXR) for this launch. Without it the program runs flat and never\n"
+						 "    creates an OpenXR instance, whatever the settings say.\n");
+	std::fprintf(stderr, "  -vr-info: Prints OpenXR runtime and headset information and exits.\n");
+#endif
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
 						 "    parameters make up the filename. Use when the filename contains\n"
 						 "    spaces or starts with a dash.\n");
@@ -2165,6 +2182,19 @@ bool QtHost::ParseCommandLineOptions(const QStringList& args, std::shared_ptr<VM
 				PrintCommandLineVersion();
 				return false;
 			}
+#ifdef ENABLE_OPENXR
+			else if (CHECK_ARG(QStringLiteral("--vr")) || CHECK_ARG(QStringLiteral("-vr")))
+			{
+				VR::SetLaunchRequestedVR(true);
+				continue;
+			}
+			else if (CHECK_ARG(QStringLiteral("-vr-info")))
+			{
+				PrintCommandLineVersion();
+				std::fprintf(stderr, "%s", VR::GetRuntimeInfoReport().c_str());
+				return false;
+			}
+#endif
 			else if (CHECK_ARG(QStringLiteral("-batch")))
 			{
 				s_batch_mode = true;
@@ -2467,6 +2497,27 @@ int main(int argc, char* argv[])
 	// Are we just setting up the configuration?
 	if (s_test_config_and_exit)
 		return EXIT_SUCCESS;
+
+#ifdef ENABLE_OPENXR
+	{
+		const auto& issues = VR::ProfileDB::ValidateAtLaunch();
+		if (!issues.empty())
+		{
+			QString msg = QStringLiteral("%1 invalid VR profile file(s) found at launch:\n\n").arg(issues.size());
+			for (const auto& issue : issues)
+			{
+				// Also in the log: on the Steam Frame the dialog may open where nobody sees it.
+				Console.Error("(VR) Invalid VR profile %s: %s", issue.file.c_str(), issue.message.c_str());
+				msg += QStringLiteral("%1\n    %2\n\n")
+						   .arg(QString::fromStdString(issue.file), QString::fromStdString(issue.message));
+			}
+			msg += QStringLiteral("These files are SKIPPED for this session. Where a shipped profile "
+								  "exists for the same game, it is used instead. Fix or remove the "
+								  "listed files. This check runs at every launch.");
+			QMessageBox::critical(nullptr, QStringLiteral("Invalid VR profiles"), msg);
+		}
+	}
+#endif
 
 	// Remove any previous-version remanants.
 	if (s_cleanup_after_update)

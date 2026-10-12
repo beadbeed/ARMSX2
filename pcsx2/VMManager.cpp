@@ -4,6 +4,11 @@
 #ifdef ENABLE_VR
 #include "VR/StereoSettings.h"
 #endif
+#ifdef ENABLE_OPENXR
+#include "VR/CameraDriver.h"
+#include "VR/GameFeedback.h"
+#include "VR/VRManager.h"
+#endif
 #include "Achievements.h"
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
@@ -534,6 +539,10 @@ bool VMManager::Internal::CPUThreadInitialize()
 
 	if (EmuConfig.Achievements.Enabled && !Achievements::IsActive())
 		Achievements::Initialize();
+
+#ifdef ENABLE_OPENXR
+	VR::UpdateSettings();
+#endif
 
 	ReloadPINE();
 
@@ -1464,6 +1473,11 @@ void VMManager::UpdateDiscDetails(bool booting)
 	UpdateGameSettingsLayer();
 	ApplySettings();
 
+#ifdef ENABLE_OPENXR
+	// The game's VR profile (serial and CRC are known now): screen, VR Gamepad bindings, camera.
+	VR::UpdateSettings();
+#endif
+
 	// Patches are game-dependent, thus should get applied after game settings ia loaded.
 	if (!ArePatchesDisabledByEmulationOnlyMode())
 	{
@@ -1491,6 +1505,11 @@ void VMManager::ClearDiscDetails()
 	s_disc_version = {};
 	s_disc_elf = {};
 	s_disc_serial = {};
+#ifdef ENABLE_OPENXR
+	// Outside the info lock, as in PenguinScreen2.
+	lock.unlock();
+	VR::ClearSpatialControls();
+#endif
 }
 
 void VMManager::HandleELFChange(bool verbose_patches_if_changed)
@@ -2576,6 +2595,10 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 		return false;
 
 	Host::OnSaveStateLoaded(filename, true);
+#ifdef ENABLE_OPENXR
+	VR::CameraDriver::OnStateLoaded();
+	VR::GameFeedback::OnStateLoaded();
+#endif
 	if (g_InputRecording.isActive())
 	{
 		g_InputRecording.handleLoadingSavestate();
@@ -3907,6 +3930,11 @@ void VMManager::CheckForConfigChanges(const Pcsx2Config& old_config)
 
 	if (EmuConfig.Achievements != old_config.Achievements)
 		Achievements::UpdateSettings(old_config.Achievements);
+
+#ifdef ENABLE_OPENXR
+	if (EmuConfig.VR != old_config.VR)
+		VR::UpdateSettings();
+#endif
 
 	FullscreenUI::CheckForConfigChanges(old_config);
 
