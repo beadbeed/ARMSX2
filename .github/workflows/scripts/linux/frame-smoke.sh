@@ -7,9 +7,15 @@
 #      Also with XR_RUNTIME_JSON naming a runtime library that does not exist, and
 #      with stderr into a pipe nobody reads (as when Ctrl+C ends tee over SSH).
 #   2. frame-probe.sh runs the probe and writes the launch log and the probe log.
-#   3. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
+#   3. ARMSX2 itself starts on aarch64 with the OpenXR VR layer and the static loader
+#      linked in: QT_QPA_PLATFORM=offscreen AppRun -vr-info prints the version line
+#      and "No OpenXR runtime is available". The VR profiles are in the AppDir.
+#   4. launch-outbreak-vr.sh with no game: writes the first-run ini (the settings
+#      version ARMSX2 expects, VR on, head camera and stereo off), says no game was
+#      given and exits 2; a second run leaves the ini alone.
+#   5. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
 #      GLIBC_ symbol version above 2.39.
-#   4. bash -n passes on the scripts.
+#   6. bash -n passes on the scripts.
 # Usage: frame-smoke.sh <directory holding outbreak-vr-frame-*.tar.zst>
 
 set -euo pipefail
@@ -31,7 +37,9 @@ probe="$appdir/usr/bin/frame-xrprobe"
 echo "Bundle: $archive ($(du -h "$archive" | cut -f1)) -> $appdir"
 
 echo "== Layout"
-for f in AppRun usr/bin/armsx2-qt usr/bin/frame-xrprobe frame-probe.sh README-FRAME.md; do
+for f in AppRun usr/bin/armsx2-qt usr/bin/frame-xrprobe frame-probe.sh launch-outbreak-vr.sh README-FRAME.md \
+	usr/bin/resources/vr-profiles/SLPM-65428.yaml usr/bin/resources/vr-profiles/SLPM-65692.yaml \
+	usr/plugins/platforms/libqoffscreen.so; do
 	if [ -e "$appdir/$f" ]; then
 		echo "ok   $f"
 	else
@@ -40,6 +48,7 @@ for f in AppRun usr/bin/armsx2-qt usr/bin/frame-xrprobe frame-probe.sh README-FR
 done
 [ -x "$probe" ] || note "usr/bin/frame-xrprobe is not executable"
 [ -x "$appdir/frame-probe.sh" ] || note "frame-probe.sh is not executable"
+[ -x "$appdir/launch-outbreak-vr.sh" ] || note "launch-outbreak-vr.sh is not executable"
 
 echo "== What frame-xrprobe needs"
 # glibc and libgcc_s only: libstdc++ is linked statically and the OpenXR loader
@@ -145,6 +154,62 @@ else
 fi
 [ -n "$probe_log" ] || note "frame-probe.sh: the probe wrote no log in ~/frame-probe"
 
+echo "== armsx2-qt -vr-info (QT_QPA_PLATFORM=offscreen, no OpenXR runtime)"
+missing=$(LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$appdir/usr/bin/armsx2-qt" 2>&1 | grep 'not found' || true)
+if [ -n "$missing" ]; then
+	echo "Libraries armsx2-qt needs that neither the AppDir nor this runner has:"
+	echo "$missing"
+fi
+home="$work/home-vrinfo"
+mkdir -p "$home"
+set +e
+"${NO_RUNTIME_ENV[@]}" HOME="$home" QT_QPA_PLATFORM=offscreen timeout 120 "$appdir/AppRun" -vr-info >"$work/vr-info.txt" 2>&1
+code=$?
+set -e
+cat "$work/vr-info.txt"
+# Like -version, -vr-info returns from the argument parser, so ARMSX2 exits 1. A crash, a hang or a
+# failure to start is what fails here.
+case $code in
+	0 | 1) echo "exit code $code" ;;
+	*) note "-vr-info: exit code $code (124: hung, 127: did not start, 134 or 139: crashed)" ;;
+esac
+grep -q '^ARMSX2 ' "$work/vr-info.txt" || note "-vr-info: no version line ('ARMSX2 <version>')"
+grep -q 'No OpenXR runtime is available' "$work/vr-info.txt" || note "-vr-info: no 'No OpenXR runtime is available'"
+
+echo "== launch-outbreak-vr.sh with no game (first run)"
+home="$work/home-launch"
+mkdir -p "$home"
+set +e
+"${NO_RUNTIME_ENV[@]}" HOME="$home" "$appdir/launch-outbreak-vr.sh"
+code=$?
+set -e
+[ "$code" -eq 2 ] || note "launch-outbreak-vr.sh with no game: exit code $code, expected 2"
+launch=$(ls "$home"/armsx2-vr/logs/launch-*.log 2>/dev/null | head -n 1 || true)
+if [ -n "$launch" ]; then
+	cat "$launch"
+	grep -q 'No game given' "$launch" || note "launch-outbreak-vr.sh: the launch log lacks 'No game given'"
+	grep -q 'First run: writing' "$launch" || note "launch-outbreak-vr.sh: the launch log lacks 'First run: writing'"
+else
+	note "launch-outbreak-vr.sh wrote no launch log in ~/armsx2-vr/logs"
+fi
+ini="$home/.config/ARMSX2/inis/PCSX2.ini"
+if [ -f "$ini" ]; then
+	for want in 'SettingsVersion = 1' 'SetupWizardIncomplete = false' 'Renderer = 14' 'upscale_multiplier = 1' \
+		'vuThread = true' 'Enable = true' 'HeadCamera = false' 'StereoMode = false'; do
+		grep -qx "$want" "$ini" || note "first-run ini lacks '$want'"
+	done
+	# The ini's SettingsVersion must be ARMSX2's, or ARMSX2 writes its defaults over the file.
+	grep -q 'static constexpr u32 SETTINGS_VERSION = 1;' pcsx2/VMManager.cpp ||
+		note "VMManager.cpp's SETTINGS_VERSION is no longer 1: update the first-run ini in frame/launch-outbreak-vr.sh"
+	echo "# frame-smoke: left alone?" >>"$ini"
+	set +e
+	"${NO_RUNTIME_ENV[@]}" HOME="$home" "$appdir/launch-outbreak-vr.sh" >/dev/null 2>&1
+	set -e
+	grep -q 'frame-smoke: left alone' "$ini" || note "launch-outbreak-vr.sh rewrote an existing ini"
+else
+	note "launch-outbreak-vr.sh wrote no first-run ini at $ini"
+fi
+
 echo "== GLIBC symbol versions (the Frame image has glibc $MAX_GLIBC)"
 highest=""
 checked=0
@@ -167,7 +232,8 @@ echo "ELF files checked: $checked; the highest GLIBC_ version any of them needs:
 [ "$checked" -gt 0 ] || note "no ELF files found in the AppDir"
 
 echo "== bash -n"
-for s in frame/*.sh "$appdir/frame-probe.sh" .github/workflows/scripts/linux/frame-smoke.sh; do
+for s in frame/*.sh "$appdir/frame-probe.sh" "$appdir/launch-outbreak-vr.sh" .github/workflows/scripts/linux/frame-smoke.sh \
+	tools/outbreak-vr/hook-audit.sh; do
 	if bash -n "$s"; then
 		echo "ok   $s"
 	else

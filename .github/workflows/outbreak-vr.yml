@@ -30,8 +30,10 @@ jobs:
       frameBundle: true
 
   # Headset-free checks of the Frame bundle on the image whose glibc (2.39) matches
-  # the Frame's: the probe starts and logs with no OpenXR runtime, nothing in the
-  # AppDir needs a newer glibc, and the scripts parse.
+  # the Frame's: the probe starts and logs with no OpenXR runtime, ARMSX2 starts with
+  # the VR layer linked in (-vr-info), the launcher writes its first-run ini, nothing
+  # in the AppDir needs a newer glibc, the scripts parse, and every OpenXR hook in a
+  # shared file is under #ifdef ENABLE_OPENXR (hook-audit).
   frame-smoke:
     name: Steam Frame smoke test (no headset)
     needs: frame-linux-arm64
@@ -40,6 +42,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
+        with:
+          # hook-audit compares with the commit where the Outbreak VR work starts.
+          fetch-depth: 0
 
       - name: Download the Frame bundle
         uses: actions/download-artifact@v8
@@ -48,11 +53,22 @@ jobs:
           path: dl
           merge-multiple: true
 
-      # lavapipe gives the probe a Vulkan device to list when there is no runtime.
+      # lavapipe gives the probe a Vulkan device to list when there is no runtime. The
+      # libraries are the build job's, for the ones the AppDir leaves to the system
+      # (armsx2-qt -vr-info has to start).
       - name: Install tools
         run: |
           sudo tools/retry.sh apt-get -o Acquire::ForceIPv4=true update
-          sudo tools/retry.sh apt-get -y install binutils zstd libvulkan1 mesa-vulkan-drivers
+          sudo tools/retry.sh apt-get -y install binutils zstd libvulkan1 mesa-vulkan-drivers \
+            libasound2-dev libaio-dev libcurl4-openssl-dev libdbus-1-dev libdecor-0-dev libegl-dev libevdev-dev \
+            libfontconfig-dev libfreetype-dev libgtk-3-dev libgudev-1.0-dev libharfbuzz-dev libinput-dev libopengl-dev \
+            libopus-dev libpcap-dev libpipewire-0.3-dev libpulse-dev libssl-dev libudev-dev libva-dev libwayland-dev \
+            libx11-dev libx11-xcb-dev libx264-dev libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-image0-dev \
+            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev libxcb-xinput-dev \
+            libxcb-xkb-dev libxext-dev libxkbcommon-x11-dev libxrandr-dev zlib1g-dev
 
       - name: Run the checks
         run: bash .github/workflows/scripts/linux/frame-smoke.sh dl
+
+      - name: Hook audit
+        run: bash tools/outbreak-vr/hook-audit.sh

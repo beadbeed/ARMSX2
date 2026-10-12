@@ -156,6 +156,14 @@ if [[ "${FRAME_BUNDLE:-}" == "1" ]]; then
 	echo "Adding the Steam Frame files to the AppDir..."
 	install -m 755 "$BUILDDIR/bin/frame-xrprobe" "$OUTDIR/usr/bin/frame-xrprobe"
 	install -m 755 "$PCSX2DIR/frame/frame-probe.sh" "$OUTDIR/frame-probe.sh"
+	install -m 755 "$PCSX2DIR/frame/launch-outbreak-vr.sh" "$OUTDIR/launch-outbreak-vr.sh"
+	# Qt's offscreen platform plugin, so "QT_QPA_PLATFORM=offscreen ./AppRun -vr-info" runs with no display
+	# (over SSH on the Frame, and in the frame-smoke CI job).
+	if [ -f "$DEPSDIR/plugins/platforms/libqoffscreen.so" ]; then
+		install -D -m 755 "$DEPSDIR/plugins/platforms/libqoffscreen.so" "$OUTDIR/usr/plugins/platforms/libqoffscreen.so"
+	else
+		echo "Qt's offscreen platform plugin is not in $DEPSDIR; the bundle goes without it."
+	fi
 	install -m 644 "$PCSX2DIR/frame/README-FRAME.md" "$OUTDIR/README-FRAME.md"
 
 	FRAME_NAME="outbreak-vr-frame-$(git -C "$PCSX2DIR" rev-parse --short=10 HEAD)"
