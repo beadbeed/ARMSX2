@@ -7,7 +7,11 @@
 #ifdef ENABLE_OPENXR
 #include "VR/CameraDriver.h"
 #include "VR/GameFeedback.h"
+#include "VR/HudCards.h"
+#include "VR/SplitState.h"
 #include "VR/VRManager.h"
+#include <cstdio>
+#include <cstdlib>
 #endif
 #include "Achievements.h"
 #include "BuildVersion.h"
@@ -3679,6 +3683,37 @@ void VMManager::Internal::VSyncOnCPUThread()
 	Pad::UpdateMacroButtons();
 
 	Patch::ApplyVsyncPatches();
+
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame), from PenguinScreen2's VSyncOnCPUThread: the head pose drives the game
+	// camera (CameraDriver writes the profile's camera.lookAt into guest memory once a vsync), then the
+	// readers of the record Apply just resolved, then the stereo scene and the split-screen state.
+	VR::CameraDriver::Apply();
+	// Reads the record Apply just resolved for this vsync.
+	VR::GameFeedback::Poll();
+	// The wrist card's reads, from the same record.
+	VR::HudCards::Poll();
+	{
+		// PCSX2_VR_GSDUMP_AT_VSYNC=<vsync>[:<frames>]: one GS dump at that vsync, for a local test only.
+		static const char* s_dump_env = std::getenv("PCSX2_VR_GSDUMP_AT_VSYNC");
+		static u64 s_dump_vsyncs = 0;
+		static bool s_dump_fired = false;
+		if (s_dump_env && !s_dump_fired)
+		{
+			u32 at = 0, frames = 1;
+			if (std::sscanf(s_dump_env, "%u:%u", &at, &frames) < 1)
+				at = 0;
+			if (++s_dump_vsyncs >= at)
+			{
+				s_dump_fired = true;
+				Console.WriteLn("(VR) Self-serve GS dump: queuing a %u-frame dump at vsync %llu (PCSX2_VR_GSDUMP_AT_VSYNC).", frames, static_cast<unsigned long long>(s_dump_vsyncs));
+				MTGS::RunOnGSThread([frames]() { GSQueueSnapshot(std::string(), frames); });
+			}
+		}
+	}
+	VR::ApplySceneStereo();
+	VR::SplitState::Apply();
+#endif
 
 	// Frame advance must be done *before* pumping messages, because otherwise
 	// we'll immediately reduce the counter we just set.
