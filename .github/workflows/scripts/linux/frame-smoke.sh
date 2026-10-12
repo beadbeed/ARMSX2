@@ -77,6 +77,8 @@ run_probe() {
 	[ "$code" -eq 0 ] || note "$name: exit code $code, expected 0"
 	grep -q 'Page size: 4096 bytes' "$log" || note "$name: the log lacks 'Page size: 4096 bytes'"
 	grep -q 'runtime unavailable' "$log" || note "$name: the log lacks 'runtime unavailable'"
+	# The loader's compiled-in SYSCONFDIR (CMAKE_INSTALL_PREFIX /usr/local in CI) is on the probe's list too.
+	grep -q '/usr/local/etc/openxr/1/active_runtime.json' "$log" || note "$name: the manifest list lacks the loader's SYSCONFDIR"
 	grep -q 'Vulkan device 0:' "$log" || note "$name: the log lists no Vulkan device (lavapipe expected)"
 	grep -q 'frame-xrprobe finished, exit code 0' "$log" || note "$name: the log lacks the finish line"
 }
