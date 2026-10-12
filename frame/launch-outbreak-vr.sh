@@ -92,7 +92,8 @@ if [ ! -e "$INI" ]; then
 	# SettingsVersion must match ARMSX2's (VMManager.cpp SETTINGS_VERSION), or ARMSX2 treats the file as
 	# unreadable and writes its defaults over it (and opens the setup wizard). Keys left out keep ARMSX2's
 	# defaults: Pad1 is a DualShock 2, the BIOS folder is $DATA_ROOT/bios, and the VR profile's VR Gamepad
-	# adds its bindings to Pad1 on top of the ini's.
+	# adds its bindings to Pad1 on top of the ini's. [VR] SnapTurn = false: the right stick turns the view smoothly
+	# (SnapTurn = true for 30 degree steps). Seated play needs no key: the VR layer uses the LOCAL (seated) space.
 	cat >"$INI" <<'EOF'
 [UI]
 SettingsVersion = 1
@@ -114,6 +115,7 @@ vuThread = true
 Enable = true
 HeadCamera = true
 StereoMode = true
+SnapTurn = false
 HeadsetRateSubmit = true
 EOF
 else

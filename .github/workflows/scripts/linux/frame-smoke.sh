@@ -198,7 +198,7 @@ fi
 ini="$home/.config/ARMSX2/inis/PCSX2.ini"
 if [ -f "$ini" ]; then
 	for want in 'SettingsVersion = 1' 'SetupWizardIncomplete = false' 'Renderer = 14' 'upscale_multiplier = 1' \
-		'vuThread = true' 'Enable = true' 'HeadCamera = true' 'StereoMode = true'; do
+		'vuThread = true' 'Enable = true' 'HeadCamera = true' 'StereoMode = true' 'SnapTurn = false'; do
 		grep -qx "$want" "$ini" || note "first-run ini lacks '$want'"
 	done
 	# The ini's SettingsVersion must be ARMSX2's, or ARMSX2 writes its defaults over the file.
