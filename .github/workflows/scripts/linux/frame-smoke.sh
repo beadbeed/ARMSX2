@@ -5,7 +5,7 @@
 #      page size 4096 and "runtime unavailable" in the log, and a Vulkan device
 #      (lavapipe), because the probe lists the devices directly without a runtime.
 #   2. frame-probe.sh runs the probe and writes the launch log and the probe log.
-#   3. frame-xrprobe does not need libstdc++, and no ELF in the AppDir needs a
+#   3. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
 #      GLIBC_ symbol version above 2.39.
 #   4. bash -n passes on the scripts.
 # Usage: frame-smoke.sh <directory holding outbreak-vr-frame-*.tar.zst>
@@ -40,13 +40,20 @@ done
 [ -x "$appdir/frame-probe.sh" ] || note "frame-probe.sh is not executable"
 
 echo "== What frame-xrprobe needs"
-objdump -p "$probe" | grep NEEDED || true
-if objdump -p "$probe" | grep -q 'NEEDED.*libstdc++'; then
-	note "frame-xrprobe needs libstdc++.so (it should link it statically)"
-fi
+# glibc and libgcc_s only: libstdc++ is linked statically and the OpenXR loader
+# (with its jsoncpp) is built in, so the probe starts on whatever the Frame has.
+needed=$(objdump -p "$probe" | awk '/NEEDED/ { print $2 }')
+for lib in $needed; do
+	echo "  $lib"
+	case "$lib" in
+		libc.so.6 | libm.so.6 | libgcc_s.so.1 | libdl.so.2 | libpthread.so.0 | ld-linux-aarch64.so.1) ;;
+		*) note "frame-xrprobe needs $lib; only glibc and libgcc_s are expected" ;;
+	esac
+done
 
-# HOME points at an empty folder, so no ~/.config/openxr can exist, and
-# XR_RUNTIME_JSON is unset: the loader finds no runtime.
+# No runtime anywhere the loader looks: XR_RUNTIME_JSON and the runner's XDG
+# directories are unset, and HOME is an empty folder.
+NO_RUNTIME_ENV=(env -u XR_RUNTIME_JSON -u XDG_CONFIG_HOME -u XDG_CONFIG_DIRS -u XDG_DATA_HOME -u XDG_DATA_DIRS)
 run_probe() {
 	local name=$1
 	shift
@@ -54,7 +61,7 @@ run_probe() {
 	mkdir -p "$dir"
 	echo "== frame-xrprobe $* (no OpenXR runtime)"
 	set +e
-	env -u XR_RUNTIME_JSON HOME="$work/home-$name" "$probe" --log-dir "$dir" "$@" 2>"$dir/stderr.txt"
+	"${NO_RUNTIME_ENV[@]}" HOME="$work/home-$name" "$probe" --log-dir "$dir" "$@" 2>"$dir/stderr.txt"
 	local code=$?
 	set -e
 	local log
@@ -80,7 +87,7 @@ echo "== frame-probe.sh --no-session (no OpenXR runtime)"
 home="$work/home-script"
 mkdir -p "$home"
 set +e
-env -u XR_RUNTIME_JSON HOME="$home" "$appdir/frame-probe.sh" --no-session
+"${NO_RUNTIME_ENV[@]}" HOME="$home" "$appdir/frame-probe.sh" --no-session
 code=$?
 set -e
 [ "$code" -eq 0 ] || note "frame-probe.sh: exit code $code, expected 0"

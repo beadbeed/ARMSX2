@@ -63,6 +63,10 @@
 #ifndef FRAME_XRPROBE_VERSION
 #define FRAME_XRPROBE_VERSION "unknown"
 #endif
+// The OpenXR loader's compiled-in SYSCONFDIR (CMAKE_INSTALL_FULL_SYSCONFDIR); it searches /etc after it.
+#ifndef FRAME_XRPROBE_SYSCONFDIR
+#define FRAME_XRPROBE_SYSCONFDIR "/etc"
+#endif
 
 extern char** environ;
 
@@ -838,8 +842,8 @@ namespace
 	void ReportRuntimeManifests()
 	{
 		// The same order as the vendored loader (src/loader/manifest_file.cpp): XR_RUNTIME_JSON, then
-		// XDG_CONFIG_HOME (default ~/.config), each XDG_CONFIG_DIRS entry (default /etc/xdg), then /etc;
-		// in each, the arch-specific file before the plain one.
+		// XDG_CONFIG_HOME (default ~/.config), each XDG_CONFIG_DIRS entry (default /etc/xdg), then the
+		// compiled-in SYSCONFDIR and /etc; in each, the arch-specific file before the plain one.
 		std::vector<std::string> candidates;
 		if (const char* env = std::getenv("XR_RUNTIME_JSON"); env && *env)
 			AddUnique(candidates, env);
@@ -849,6 +853,7 @@ namespace
 		AddUnique(prefixes, config_home);
 		for (const std::string& d : Split(EnvOr("XDG_CONFIG_DIRS", "/etc/xdg"), ':'))
 			AddUnique(prefixes, d);
+		AddUnique(prefixes, FRAME_XRPROBE_SYSCONFDIR);
 		AddUnique(prefixes, "/etc");
 		for (const std::string& p : prefixes)
 		{
@@ -891,6 +896,7 @@ namespace
 		std::vector<std::string> bases;
 		for (const std::string& d : Split(EnvOr("XDG_CONFIG_DIRS", "/etc/xdg"), ':'))
 			AddUnique(bases, d);
+		AddUnique(bases, FRAME_XRPROBE_SYSCONFDIR);
 		AddUnique(bases, "/etc");
 		for (const std::string& d : Split(EnvOr("XDG_DATA_DIRS", "/usr/local/share:/usr/share"), ':'))
 			AddUnique(bases, d);

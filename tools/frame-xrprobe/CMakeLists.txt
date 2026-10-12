@@ -9,8 +9,11 @@ add_executable(frame-xrprobe frame-xrprobe.cpp)
 # dlopen at run time) and libdl for that dlopen.
 target_link_libraries(frame-xrprobe PRIVATE openxr_loader vulkan-headers ${CMAKE_DL_LIBS})
 
+# The loader searches its compiled-in SYSCONFDIR (CMAKE_INSTALL_FULL_SYSCONFDIR, so
+# /usr/local/etc in CI) and then /etc; the probe lists the same places.
 target_compile_definitions(frame-xrprobe PRIVATE
 	"FRAME_XRPROBE_VERSION=\"${PCSX2_GIT_REV} (${PCSX2_GIT_HASH})\""
+	"FRAME_XRPROBE_SYSCONFDIR=\"${CMAKE_INSTALL_FULL_SYSCONFDIR}\""
 )
 
 # Linked without a libstdc++ dependency: the probe has to start on whatever the

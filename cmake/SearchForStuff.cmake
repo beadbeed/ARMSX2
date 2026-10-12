@@ -196,6 +196,9 @@ if(ENABLE_OPENXR)
 	set(BUILD_TESTS OFF CACHE BOOL "Build OpenXR tests" FORCE)
 	set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "Build OpenXR conformance tests" FORCE)
 	set(BUILD_SDK_TESTS OFF CACHE BOOL "Build OpenXR SDK samples" FORCE)
+	# The vendored jsoncpp even when a system one is installed: the loader is linked
+	# into binaries that run on the Frame, which may not have libjsoncpp.
+	set(BUILD_WITH_SYSTEM_JSONCPP OFF CACHE BOOL "Use system jsoncpp instead of vendored source" FORCE)
 	add_subdirectory(3rdparty/openxr EXCLUDE_FROM_ALL)
 	if(NOT MSVC)
 		# The loader's ABI shields (XRLOADER_ABI_TRY/CATCH) require exceptions;
