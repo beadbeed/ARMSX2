@@ -86,3 +86,36 @@ comes up, the Frame controllers work the menus and move the character, the speed
 (the version line and "No OpenXR runtime is available"), checks the VR profiles are in the AppDir, runs the
 launcher with no game (first-run ini written, exit 2), runs `AppRun -testconfig` on that ini (loaded without a
 reset, BIOS folder at `~/.config/ARMSX2/bios`), and runs the hook audit.
+
+## Steam Frame: first person (M1)
+
+Branch `outbreak-vr-frame` now plays Outbreak in first person on the Frame. What M1 adds (every change to a shared
+ARMSX2 file is under `#ifdef ENABLE_OPENXR`; `pcsx2/VR/VR-SOURCE.md` has the details and line numbers):
+
+- **The head drives the game camera.** VMManager runs PenguinScreen2's per-vsync VR block: `CameraDriver::Apply`
+  writes the profile's `camera.lookAt` from the head pose into game memory, then `GameFeedback::Poll`,
+  `HudCards::Poll`, `ApplySceneStereo` and `SplitState::Apply`. The writes go through ARMSX2's normal memory path,
+  and its arm64 recompiler protects code pages the same way as the x86 one, so a code hook (Outbreak uses none)
+  would also be picked up.
+- **One owner for the stereo state.** The VR layer (`VR::UpdateSettings`, `VR::ApplySceneStereo`) decides when stereo
+  is on and with which numbers; ARMSX2's own `[VR] StereoEnable` keys are ignored in this build, and `DebugView` and
+  `InterleaveEyes` stay as debug options. The texture cache gives the display chain a layer per eye whenever the VR
+  layer turns stereo on.
+- **First-person stereo from PenguinScreen2:** true depth in front of the screen plane down to the profile's nearest
+  distance (the near floor), parallax that follows head roll, the HUD collimation and depth histogram hooks, and
+  `PCSX2_VR_SNAPSHOT_LAYER=1` for right-eye dumps. The Vulkan shader's new terms apply only when first person sets
+  them, so every other shader computes what it did before.
+- **Compositor:** the two-layer target goes to the headset as two swapchains of one layer each (one per eye), which
+  avoids the SteamVR-for-Linux array-layer bugs (#975, openvr#1822). A new `(VR) Pose-to-photon:` line every 5 s says
+  how far behind its head pose each first-person image reaches the display.
+- **Launcher:** the first-run ini now has `HeadCamera = true` and `StereoMode = true`. `FRAME_VIEW=flat` gives M0's
+  flat screen, `FRAME_VIEW=first-person` turns an M0 ini into an M1 one.
+- **Hook parity:** `tools/outbreak-vr/hook-parity.py` compares every PenguinScreen2 `ENABLE_VR` block with ARMSX2
+  and fails unless each one is ported or in `hook-parity-allowlist.txt` with a reason. The frame-smoke job runs it
+  against the PenguinScreen2 commit `pcsx2/VR` came from.
+
+**What to check in the headset** (step by step in `frame/README-FRAME.md`, section 3): first person arms in a room;
+the world holds still when you turn your head (no swim); stereo depth looks right and the HUD is not doubled; the game
+keeps at least 95% speed for 10 minutes; loading a savestate keeps the camera. Send back `~/armsx2-vr/logs/launch-*.log`
+(with the `(VR) Pose-to-photon:`, `(VR) Frames:` and `(VR) First-person stereo:` lines), `emulog.txt` and SteamVR's
+logs.
