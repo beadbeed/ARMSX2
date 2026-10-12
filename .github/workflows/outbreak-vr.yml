@@ -72,3 +72,27 @@ jobs:
 
       - name: Hook audit
         run: bash tools/outbreak-vr/hook-audit.sh
+
+      # Hook parity: every PenguinScreen2 ENABLE_VR block in a shared file is in ARMSX2 (under ENABLE_OPENXR or
+      # its own ENABLE_VR stereo code), or in tools/outbreak-vr/hook-parity-allowlist.txt with the reason.
+      # PenguinScreen2 is checked out read only, at the commit pcsx2/VR was copied from.
+      - name: PenguinScreen2 commit for the hook parity check
+        id: ps2
+        run: echo "sha=$(tr -d ' \r\n' < tools/outbreak-vr/PENGUINSCREEN2_COMMIT)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PenguinScreen2 (read only)
+        uses: actions/checkout@v7
+        with:
+          repository: beadbeed/PenguinScreen2
+          ref: ${{ steps.ps2.outputs.sha }}
+          path: penguinscreen2
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            pcsx2
+            pcsx2-qt
+            pcsx2-gsrunner
+            common
+
+      - name: Hook parity
+        run: python3 tools/outbreak-vr/hook-parity.py --ps2 penguinscreen2

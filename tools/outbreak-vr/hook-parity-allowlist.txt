@@ -1,0 +1,28 @@
+# hook-parity allowlist: PenguinScreen2 ENABLE_VR blocks that ARMSX2 does not have, or has in another form.
+#
+#   <PenguinScreen2 file (* globs)> | <regex found in the block's text, or *> | <action> | <reason>
+#
+# Actions: skip (not ported, or not yet), differs (ported in another form), omit:<regex>;;<regex>... (ported, less
+# the statements matching any of the regexes; the rest of the block must still be in ARMSX2). The first line that
+# matches a block applies. Statements are compared normalised (no comments or whitespace, string literals empty),
+# so the regexes are written against that form, e.g. "if(a&&b){".
+
+# Not ported yet, with the milestone that brings them.
+pcsx2-gsrunner/Main.cpp | * | skip | gsrunner's stereo replay of GS dumps (qhist, -vr, the profile check): GS dumps never go in CI or the bundle; with the headset-free test kit (M2)
+pcsx2-qt/Settings/SettingsWindow.cpp | * | skip | the VR settings page (VRSettingsWidget): M5
+pcsx2/Hotkeys.cpp | * | skip | VR recenter and headset brightness hotkeys: M2
+pcsx2/PINE.cpp | * | skip | PINE VR fake input and the qhist flush (the headset-free test kit): M2
+pcsx2/SIO/Pad/PadDualshock2.cpp | * | skip | PadLook probes, the recenter chord and right-stick look: M2 controls (ARMSX2 has only GetAxisScale)
+pcsx2/x86/ix86-32/iR5900.cpp | * | skip | MemWatch hit hook in the x86 recompiler; the Frame runs ARMSX2's arm64 recompiler, which has no memcheck hook, so MemWatch stays inactive there
+pcsx2-qt/QtHost.cpp | vr-seat | differs | --vr and -vr-info and their help lines are ported; --vr-seat, --vr-cast (seat session and cast, M5 co-op) and --qhist-live (M2 test kit) are not
+pcsx2-qt/QtHost.cpp | DepthHistogram | omit:DepthHistogram | the qhist arguments, and so the DepthHistogram include, are not ported (M2 test kit)
+
+# Ported in another form.
+pcsx2-qt/QtHost.cpp | vr_safe | differs | the same no-pause rule (online, or a VR controller with OnlineSafe), written as one no_pause expression
+pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp | CreateVulkanInstanceThroughXR | differs | the same call in a braced block: ARMSX2 also records the requested instance extensions for its driver report
+pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp | s_warned_date_stereo | skip | the DATE stencil warning on a stereo target: ARMSX2's stereo renderer has its own
+pcsx2/GS/Renderers/HW/GSRendererHW.cpp | VRZQFitEnvFloat | differs | ARMSX2's own port of the same Z-to-1/w fit (ENABLE_VR, every stereo build): fixed thresholds instead of the PCSX2_VR_ZFIT_MINAGREE/MINR2 env overrides, shorter log lines
+pcsx2/GS/Renderers/HW/GSRendererHW.cpp | PCSX2_VR_SNAPSHOT_LAYER | differs | ported (M1) as the VRSnapshotLayer() helper at the same four dump sites
+pcsx2/GS/Renderers/HW/GSRendererHW.cpp | DepthHistogramArmed | omit:vr_multiview_target=rt&&;;vr_pin_screen;;s_vr_pinq1_debug;;s_vr_interleave_debug;;vr_band\[[0-3]\]=GSVector4::zero\(\);;\bmatched\b;;r\.t[uv]1>r\.t[uv]0;;<r\.t[uv]0;;i<st\.collimate_rule_count;;s_coll_census;;\bt0\b;;\bofx\b;;\bofy\b;;\bvi\b;;\bv[ab]\b;;GS_SPRITE_CLASS&&m_index->tail<=128;;std::isfinite\(slope\);;s_vr_zqfit\.AddDraw;;DevCon\.WriteLn | ARMSX2's DetermineVRStereoConfig is its own port of this block (ENABLE_VR) and differs on purpose: the pin and interleave flags come from settings ([VR] InterleaveEyes) instead of the PCSX2_VR_PINQ1 and PCSX2_VR_INTERLEAVE env switches, vr_band is zeroed in a loop, without ENABLE_OPENXR, collimation applies to every FST draw when there are no rules (with it, only rule matches, as here), the PCSX2_VR_HUDCOLL census is left out, and the DevCon lines are Console lines. The first-person near floor and roll parallax, the ZFIT and NDC lines and the DepthHistogram classes (M1) must match.
+pcsx2/GS/Renderers/HW/GSRendererHW.cpp | PromoteToStereo | omit:StereoState::Get\(\)\.enabled | the display-chain promotion check also needs [VR] InterleaveEyes off (ARMSX2's debug option): StereoState::Get().enabled&&!StereoSettings::InterleaveEyes()
+pcsx2/GS/Renderers/HW/GSTextureCache.cpp | StereoState::Get\(\)\.enabled | omit:StereoState::Get\(\)\.enabled | the per-eye target checks also need [VR] InterleaveEyes off (ARMSX2's debug option): StereoState::Get().enabled&&!StereoSettings::InterleaveEyes()
