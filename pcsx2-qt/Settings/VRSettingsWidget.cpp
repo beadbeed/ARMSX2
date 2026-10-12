@@ -1,0 +1,386 @@
+// SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+
+#include "VRSettingsWidget.h"
+#include "SettingWidgetBinder.h"
+#include "SettingsWindow.h"
+#include "QtHost.h"
+
+#include "pcsx2/Host.h"
+#include "pcsx2/VMManager.h"
+#include "pcsx2/VR/VRManager.h"
+#include "pcsx2/VR/VRProfileDB.h"
+
+#include <QtWidgets/QLabel>
+
+// [VR] FirstPersonFov: what the combo shows, and what goes in the ini.
+static const char* s_first_person_fov_names[] = {
+	QT_TRANSLATE_NOOP("VRSettingsWidget", "Fit the Headset (Auto)"),
+	QT_TRANSLATE_NOOP("VRSettingsWidget", "Game Profile"),
+	nullptr,
+};
+static const char* s_first_person_fov_values[] = {
+	"Auto",
+	"Profile",
+	nullptr,
+};
+
+VRSettingsWidget::VRSettingsWidget(SettingsWindow* settings_dialog, QWidget* parent)
+	: SettingsWidget(settings_dialog, parent)
+{
+	SettingsInterface* sif = dialog()->getSettingsInterface();
+
+	setupTab(m_ui, tr("Virtual Reality"));
+
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.enable, "VR", "Enable", false);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.screenDistance, "VR", "ScreenDistance", 2.0f);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.screenHeight, "VR", "ScreenHeight", 1.4f);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.screenArc, "VR", "ScreenArcDeg", 100.0f);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.brightness, "VR", "Brightness", 1.0f);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.stereoMode, "VR", "StereoMode", true);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.stereoUseProfile, "VR", "StereoUseProfile", true);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.stereoSeparation, "VR", "StereoSeparation", 0.02f);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.stereoConvergence, "VR", "StereoConvergence", 20.0f);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.fpStereoStrength, "VR", "FirstPersonStereoStrength", 1.0f);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.headCamera, "VR", "HeadCamera", true);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.snapTurn, "VR", "SnapTurn", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.comfortBlink, "VR", "ComfortBlink", true);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.comfortVignette, "VR", "ComfortVignette", false);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.vignetteStrength, "VR", "VignetteStrength", 0.6f);
+	SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.firstPersonFov, "VR", "FirstPersonFov", s_first_person_fov_names,
+		s_first_person_fov_values, s_first_person_fov_values[1], "VRSettingsWidget");
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.firstPersonFovMargin, "VR", "FirstPersonFovMarginDeg", 6.0f);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.edgeFill, "VR", "EdgeFill", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.laserSight, "VR", "LaserSight", true);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.menuPointer, "VR", "MenuPointer", true);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.menuTablet, "VR", "MenuTablet", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.onlineSafe, "VR", "OnlineSafe", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.privateCoopFirstPerson, "VR", "PrivateCoopFirstPerson", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.gameRumble, "VR", "GameRumble", true);
+	SettingWidgetBinder::BindWidgetToFloatSetting(sif, m_ui.hapticStrength, "VR", "HapticStrength", 1.0f);
+
+	dialog()->registerWidgetHelp(m_ui.enable, tr("Enable VR (OpenXR)"), tr("Unchecked"),
+		tr("Renders the emulated display on a virtual screen inside a connected OpenXR headset. Requires the Vulkan "
+		   "renderer and a running OpenXR runtime. Takes effect when the emulator restarts. The VR launcher arms VR "
+		   "for you without changing this setting, so leaving it unchecked still gives you VR when you start from "
+		   "the VR shortcut."));
+
+	dialog()->registerWidgetHelp(m_ui.screenDistance, tr("Screen Distance"), tr("2.0 m"),
+		tr("Sets how far in front of you the virtual screen is placed, in metres."));
+
+	dialog()->registerWidgetHelp(m_ui.screenHeight, tr("Screen Height"), tr("1.4 m"),
+		tr("Sets the physical height of the virtual screen, in metres. The width follows from the game's aspect ratio."));
+
+	dialog()->registerWidgetHelp(m_ui.screenArc, tr("Screen Curve"), tr("100°"),
+		tr("Curves the virtual screen into a cylinder section wrapping around you, in degrees of arc. 0 keeps the screen "
+		   "flat. The arc governs the screen's width (height follows the aspect ratio); Screen Distance becomes the "
+		   "cylinder radius. Requires runtime support (falls back to the flat screen otherwise). Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.brightness, tr("Headset Brightness"), tr("1.00"),
+		tr("Brightens the picture for dark scenes that are hard to read on a headset's display. It raises dark and "
+		   "middle tones while keeping black black and white white, on top of any lift the game's VR profile asks for. "
+		   "1.00 leaves the picture unchanged; values below 1.00 darken it. Applies only while a VR session is running "
+		   "(the desktop window mirrors it then), so playing without VR is never affected, and not while the graphics "
+		   "option Shade Boost is on. Takes effect immediately; the VR brightness hotkeys change it in steps of 0.1."));
+
+	dialog()->registerWidgetHelp(m_ui.stereoMode, tr("Enable Stereoscopic 3D"), tr("Checked"),
+		tr("Renders the game with per-eye depth on the virtual screen, like a 3D movie. The right values for Separation "
+		   "and Convergence vary per game; wrong values cause eye strain or double vision. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.stereoUseProfile, tr("Use Per-Game Profile When Available"), tr("Checked"),
+		tr("Applies the separation/convergence from the bundled per-game VR profile when one exists for the running game, "
+		   "ignoring the values below. Uncheck to tune the values below live."));
+
+	dialog()->registerWidgetHelp(m_ui.stereoSeparation, tr("Separation"), tr("0.02"),
+		tr("How far apart the two eyes' views are. Larger values deepen the 3D effect but increase eye strain."));
+
+	dialog()->registerWidgetHelp(m_ui.stereoConvergence, tr("Convergence"), tr("20.00"),
+		tr("The depth at which objects appear AT the screen. Objects nearer pop out; objects farther sink in. The useful "
+		   "range varies enormously between games (from below 1 to over 100)."));
+
+	dialog()->registerWidgetHelp(m_ui.fpStereoStrength, tr("First-Person Stereo Strength"), tr("1.00"),
+		tr("How deep the first-person view looks. 1.00 is life-size, computed from your headset's IPD and the first-person "
+		   "screen. Lower values flatten the picture toward the screen distance, which can be easier on the eyes. Higher "
+		   "values deepen nearby objects (the world reads a little smaller) while distant objects never go past parallel. "
+		   "Applies to games whose VR profile has first-person stereo. Takes effect immediately, easing over half a second."));
+
+	dialog()->registerWidgetHelp(m_ui.headCamera, tr("Head-Tracked Camera"), tr("Checked"),
+		tr("Drives the game's own camera with your head movement, by writing the head pose into the game's memory each "
+		   "frame. Requires a per-game immersive profile with verified camera addresses; does nothing for games without "
+		   "one. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.snapTurn, tr("Snap Turning"), tr("Unchecked"),
+		tr("In first-person profiles, the turn stick turns the view in steps (more comfortable for some people) "
+		   "instead of smoothly. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.comfortBlink, tr("Comfort Blink"), tr("Checked"),
+		tr("Briefly fades the headset view to black and back (under a fifth of a second) on each snap turn and "
+		   "whenever the picture changes between the first-person view and the virtual screen, so the jump is "
+		   "hidden instead of seen. Only changes what you see. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.comfortVignette, tr("Comfort Vignette"), tr("Unchecked"),
+		tr("In first-person profiles, darkens the edges of the headset view while the view moves without your head: "
+		   "while you turn with the stick (smooth turning) or walk. The faster it moves, the further the dark edge "
+		   "closes in, leaving the middle clear; it opens again as you stop. Snap turns use the Comfort Blink instead. "
+		   "Can ease motion sickness. Only changes what you see. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.vignetteStrength, tr("Comfort Vignette Strength"), tr("0.60"),
+		tr("How dark the Comfort Vignette's edges get while turning or walking at full speed, from 0.20 (a light "
+		   "shade) to 1.00 (black). Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.firstPersonFov, tr("First-Person Field of View"), tr("Fit the Headset (Auto)"),
+		tr("In first-person profiles, how wide the game's own camera sees. Fit the Headset widens it to your headset's "
+		   "field of view plus the margin (never narrower than the game profile's view, at most 130°), so the game draws "
+		   "the room out to the edge of what you see instead of a picture with black around it; things keep their real "
+		   "size, you just see more of the room. Because the same picture covers more of your view, it looks a little "
+		   "softer. Game Profile keeps the profile's view. Applies each time first person starts (after a door, a menu "
+		   "or a cutscene), easing in over half a second."));
+
+	dialog()->registerWidgetHelp(m_ui.firstPersonFovMargin, tr("First-Person Field of View Margin"), tr("6.0°"),
+		tr("How many degrees Fit the Headset adds to your headset's field of view, half on each side, so a quick turn of "
+		   "your head shows more of the room before the edge of the picture. Applies the next time first person starts."));
+
+	// ARMSX2 (Steam Frame M3): [VR] EdgeFill defaults to false (Config.h), so the recommended value says Unchecked.
+	dialog()->registerWidgetHelp(m_ui.edgeFill, tr("Edge Fill"), tr("Unchecked"),
+		tr("In first person, the space around the picture shows a dim, blurred continuation of its edges instead of "
+		   "black, so a fast head turn shows more of the room rather than a black border. It moves with your head, like "
+		   "a soft vignette. Only changes what you see in the headset. Takes effect the next time VR starts."));
+
+	dialog()->registerWidgetHelp(m_ui.laserSight, tr("Laser Sight"), tr("Checked"),
+		tr("In first-person profiles, while your weapon is raised, draws a thin red beam from the muzzle of the pistol "
+		   "in your hand straight along where it points, fading out over about 6 metres. It is drawn over the picture "
+		   "and does not stop at walls or enemies. Only changes what you see; the game itself is not touched. Takes "
+		   "effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.menuPointer, tr("Menu Pointer and Point-to-Select"), tr("Checked"),
+		tr("In first-person profiles, while a menu such as the item screen is up, the controller casts a thin beam "
+		   "with a dot where it points at the menu screen, and both hands are drawn pointing. Where the game's profile "
+		   "maps the menu (Outbreak File #1's item screen), pointing at one of your item cells moves the game's own "
+		   "cursor there with D-pad presses, with a light tick as it lands; pull the trigger to select it as usual. "
+		   "Nothing is ever selected for you, and the D-pad and right stick keep working. Online it works only in "
+		   "private co-op, where the profile allows it. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.menuTablet, tr("Menu Tablet"), tr("Unchecked"),
+		tr("In first-person profiles, a menu that comes up while you play (the item screen, the map) is shown on a "
+		   "small screen tilted up in front of your chest, like a tablet you hold, instead of on the big screen ahead. "
+		   "Its distance, height and size come from the game's profile. Only changes what you see. Takes effect "
+		   "immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.onlineSafe, tr("Online-Safe First Person"), tr("Unchecked"),
+		tr("Turns off the first-person extras that change gameplay, such as walking while aiming and aim pitch from "
+		   "the controller. The first-person camera itself still turns your character, which other players see. "
+		   "Always on while the network adapter is enabled, except in private co-op, where it follows this box. "
+		   "Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.privateCoopFirstPerson, tr("Private Co-op First Person"), tr("Unchecked"),
+		tr("Lets first person run online, but only on a private server: the network adapter's DNS1 must be its Internal "
+		   "DNS (Internal, or Manual 192.0.2.1), whose hosts list sends www01.kddi-mmbb.jp to a LAN, Tailscale or local "
+		   "address. On obsrv or any other server, first person stays off online and you get the 3D screen. Your "
+		   "partner sees your character turn and aim where you look, slightly late. Walking while aiming and aim pitch "
+		   "work there too, unless Online-Safe First Person is checked. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.gameRumble, tr("Forward Game Rumble to the VR Controllers"), tr("Checked"),
+		tr("Sends the game's own controller vibration to the VR controllers: the large motor to both hands, the small "
+		   "one to the right. Only for games whose VR profile asks for it, and only for the controller port the VR "
+		   "controllers play as; a gamepad bound to that port keeps its own vibration. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.hapticStrength, tr("Haptic Strength"), tr("1.00"),
+		tr("Scales the controller vibration that comes from the game: forwarded rumble and, in games whose VR profile "
+		   "has them, the pulses for being hit, for each shot and the heartbeat at low health. 0.00 turns all of it "
+		   "off. Takes effect immediately."));
+
+	dialog()->registerWidgetHelp(m_ui.profileBrowser, tr("Per-Game Profiles"), tr("N/A"),
+		tr("Browses the profiles bundled in vr-profiles.yaml. Profiles apply automatically to the matching game — this "
+		   "list is informational, showing each game's tuned values and capabilities."));
+
+	populateProfileBrowser();
+	connect(m_ui.profileBrowser, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		&VRSettingsWidget::updateProfileDetails);
+
+	updateTuningFields();
+	connect(m_ui.stereoUseProfile, &QCheckBox::toggled, this, [this](bool) { updateTuningFields(); });
+
+	updateVignetteFields();
+	connect(m_ui.comfortVignette, &QCheckBox::checkStateChanged, this, &VRSettingsWidget::updateVignetteFields);
+
+	updateFovFields();
+	connect(m_ui.firstPersonFov, &QComboBox::currentIndexChanged, this, &VRSettingsWidget::updateFovFields);
+
+	m_status_banner = new QLabel(this);
+	m_status_banner->setWordWrap(true);
+	m_status_banner->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	m_ui.verticalLayout->insertWidget(0, m_status_banner);
+	updateVRStatusBanner();
+	connect(m_ui.enable, &QCheckBox::toggled, this, [this](bool) { updateVRStatusBanner(); });
+}
+
+void VRSettingsWidget::updateVRStatusBanner()
+{
+	if (!m_status_banner)
+		return;
+
+	QString text;
+	QString accent;
+	switch (VR::GetSessionStatus())
+	{
+		case VR::SessionStatus::Active:
+			m_status_banner->hide();
+			return;
+
+		case VR::SessionStatus::DisabledInConfig:
+			text = tr("VR is turned off. Enable it below, then start the emulator with the VR launch script "
+					  "to play in the headset.");
+			accent = QStringLiteral("#3a3f4b");
+			break;
+
+		case VR::SessionStatus::NotLaunchedForVR:
+			// ARMSX2 (Steam Frame M3): the Frame's launcher.
+			text = tr("VR is enabled, but this session was launched WITHOUT the VR runtime, so it is running "
+					  "flat on your monitor. To use the headset, close the emulator and relaunch it with the VR "
+					  "launch script (launch-outbreak-vr.sh). The settings below still apply to the next VR launch.");
+			accent = QStringLiteral("#7a4a00");
+			break;
+
+		case VR::SessionStatus::Inactive:
+			text = tr("Launched for VR — the headset view initializes when a game boots. Keep the headset "
+					  "connected and awake; if it stays flat, reconnect it and relaunch.");
+			accent = QStringLiteral("#2f4a5a");
+			break;
+	}
+
+	m_status_banner->setText(text);
+	m_status_banner->setStyleSheet(
+		QStringLiteral("QLabel { background-color: %1; color: #f0f0f0; padding: 8px; border-radius: 4px; }")
+			.arg(accent));
+	m_status_banner->show();
+}
+
+void VRSettingsWidget::updateVignetteFields()
+{
+	// The strength only does something with the vignette on (per game, the effective value: the global one while
+	// the box inherits it).
+	const bool on = dialog()->getEffectiveBoolValue("VR", "ComfortVignette", false);
+	m_ui.vignetteStrength->setEnabled(on);
+	m_ui.vignetteStrengthLabel->setEnabled(on);
+}
+
+void VRSettingsWidget::updateFovFields()
+{
+	// The margin only does something with Fit the Headset (per game, the effective value: the global one while the combo
+	// inherits it).
+	const bool fit = dialog()->getEffectiveStringValue("VR", "FirstPersonFov", s_first_person_fov_values[1]) ==
+	                 s_first_person_fov_values[0];
+	m_ui.firstPersonFovMargin->setEnabled(fit);
+	m_ui.firstPersonFovMarginLabel->setEnabled(fit);
+}
+
+void VRSettingsWidget::updateTuningFields()
+{
+	const bool use_profile = m_ui.stereoUseProfile->isChecked();
+	const bool profile_in_charge = use_profile && m_running_profile_stereo.has_value();
+
+	m_ui.stereoSeparation->setEnabled(!use_profile);
+	m_ui.stereoConvergence->setEnabled(!use_profile);
+	m_ui.stereoSeparationLabel->setEnabled(!use_profile);
+	m_ui.stereoConvergenceLabel->setEnabled(!use_profile);
+	// First-person stereo comes only from a game profile, so its strength does something only with the profile on.
+	m_ui.fpStereoStrength->setEnabled(use_profile);
+	m_ui.fpStereoStrengthLabel->setEnabled(use_profile);
+
+	const QSignalBlocker sep_blocker(m_ui.stereoSeparation);
+	const QSignalBlocker conv_blocker(m_ui.stereoConvergence);
+	if (profile_in_charge)
+	{
+		m_ui.stereoSeparation->setValue(m_running_profile_stereo->first);
+		m_ui.stereoConvergence->setValue(m_running_profile_stereo->second);
+	}
+	else
+	{
+		m_ui.stereoSeparation->setValue(
+			dialog()->getEffectiveFloatValue("VR", "StereoSeparation", 0.02f));
+		m_ui.stereoConvergence->setValue(
+			dialog()->getEffectiveFloatValue("VR", "StereoConvergence", 20.0f));
+	}
+}
+
+void VRSettingsWidget::populateProfileBrowser()
+{
+	m_profiles = VR::ProfileDB::ListProfiles();
+
+	QSignalBlocker blocker(m_ui.profileBrowser);
+	m_ui.profileBrowser->clear();
+
+	const std::string running_serial = VMManager::GetDiscSerial();
+	int running_index = -1;
+	for (const VR::ProfileDB::Summary& p : m_profiles)
+	{
+		QStringList caps;
+		if (p.has_stereo)
+			caps << tr("stereo");
+		if (p.has_camera)
+			caps << tr("head camera");
+		const QString label = QStringLiteral("%1 — %2 [%3]")
+								  .arg(QString::fromStdString(p.serial),
+									  p.name.empty() ? tr("(unnamed)") : QString::fromStdString(p.name),
+									  caps.isEmpty() ? tr("none") : caps.join(QStringLiteral(", ")));
+		m_ui.profileBrowser->addItem(label);
+		if (!running_serial.empty() &&
+			QString::fromStdString(p.serial).compare(QString::fromStdString(running_serial), Qt::CaseInsensitive) == 0)
+		{
+			running_index = m_ui.profileBrowser->count() - 1;
+		}
+	}
+
+	if (m_ui.profileBrowser->count() == 0)
+	{
+		m_ui.profileBrowser->addItem(tr("(no profiles found)"));
+		m_ui.profileBrowser->setEnabled(false);
+	}
+
+	if (running_serial.empty())
+	{
+		m_ui.profileStatus->setText(tr("No game is running."));
+	}
+	else if (running_index >= 0)
+	{
+		m_ui.profileBrowser->setCurrentIndex(running_index);
+		const VR::ProfileDB::Summary& match = m_profiles[static_cast<size_t>(running_index)];
+		if (match.has_stereo)
+			m_running_profile_stereo = std::make_pair(match.separation, match.convergence);
+		m_ui.profileStatus->setText(
+			tr("Running game %1: profile FOUND — it applies automatically while \"Use Per-Game Profile\" is checked.")
+				.arg(QString::fromStdString(running_serial)));
+	}
+	else
+	{
+		m_ui.profileStatus->setText(
+			tr("Running game %1: no bundled profile — the Separation/Convergence values above apply.")
+				.arg(QString::fromStdString(running_serial)));
+	}
+
+	updateProfileDetails(m_ui.profileBrowser->currentIndex());
+	updateTuningFields();
+}
+
+void VRSettingsWidget::updateProfileDetails(int index)
+{
+	if (index < 0 || static_cast<size_t>(index) >= m_profiles.size())
+	{
+		m_ui.profileDetails->setText(QStringLiteral("-"));
+		return;
+	}
+
+	const VR::ProfileDB::Summary& p = m_profiles[static_cast<size_t>(index)];
+	QString text;
+	if (p.has_stereo)
+		text = tr("Stereo: separation %1, convergence %2.").arg(p.separation, 0, 'f', 3).arg(p.convergence, 0, 'f', 2);
+	else
+		text = tr("No stereo tuning in this profile.");
+	if (p.has_camera)
+		text += tr(" Head-tracked camera: available.");
+	m_ui.profileDetails->setText(text);
+}
+
+VRSettingsWidget::~VRSettingsWidget() = default;
+
+#include "moc_VRSettingsWidget.cpp"

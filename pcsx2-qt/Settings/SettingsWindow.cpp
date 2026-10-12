@@ -22,6 +22,9 @@
 #include "Settings/InterfaceSettingsWidget.h"
 #include "Settings/MemoryCardSettingsWidget.h"
 #include "Settings/DebugSettingsWidget.h"
+#ifdef ENABLE_OPENXR
+#include "Settings/VRSettingsWidget.h"
+#endif
 #include "SettingsWindow.h"
 
 #include "pcsx2/Achievements.h"
@@ -200,6 +203,14 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 				std::move(icon_text), std::move(help_text));
 		}
 	}
+
+#ifdef ENABLE_OPENXR
+	addWidget(new VRSettingsWidget(this, m_ui.settingsContainer), tr("VR"), QStringLiteral("headset-line"),
+		tr("<strong>VR Settings</strong><hr>These options control the experimental OpenXR virtual reality output, which mirrors the "
+		   "emulated display onto a virtual screen inside a headset. VR requires the Vulkan renderer and a running OpenXR runtime; "
+		   "enabling or disabling it takes effect when the emulator restarts.<br><br>Mouse over an option for additional information, "
+		   "and Shift+Wheel to scroll this panel."));
+#endif
 
 	if (show_advanced_settings)
 	{

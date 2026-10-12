@@ -4,9 +4,10 @@
 # Fails if a line added since BASE (default 3cf66e03aa, where the Outbreak VR work starts) in a shared
 # C/C++ file mentions the OpenXR VR layer (VR::..., OpenXR, xr..., XR_...) outside #ifdef ENABLE_OPENXR.
 # Shared means everything except the copied VR layer itself: pcsx2/VR, pcsx2/Input/VRInputSource.*,
-# 3rdparty/openxr and tools/frame-xrprobe. ARMSX2's own stereo layer is exempt: VR::StereoSettings and
-# VR::StereoState, and anything under #ifdef ENABLE_VR (on wherever stereo is). Also fails if
-# ENABLE_OPENXR no longer defaults to OFF.
+# pcsx2-qt/Settings/VRSettingsWidget.* (built only with ENABLE_OPENXR), 3rdparty/openxr and
+# tools/frame-xrprobe. ARMSX2's own stereo layer is exempt: VR::StereoSettings and VR::StereoState, and
+# anything under #ifdef ENABLE_VR (on wherever stereo is). Also fails if ENABLE_OPENXR no longer
+# defaults to OFF.
 #
 # Usage: tools/outbreak-vr/hook-audit.sh [BASE]   (run from anywhere inside the repository; needs git and
 # python3, and the history back to BASE)
@@ -31,7 +32,7 @@ fi
 
 files=$(git diff --name-only --diff-filter=AM "$BASE" -- \
 	'*.c' '*.cc' '*.cpp' '*.h' '*.hpp' '*.inl' '*.inc' '*.mm' |
-	grep -Ev '^(pcsx2/VR/|pcsx2/Input/VRInputSource\.|3rdparty/openxr/|tools/frame-xrprobe/)' || true)
+	grep -Ev '^(pcsx2/VR/|pcsx2/Input/VRInputSource\.|pcsx2-qt/Settings/VRSettingsWidget\.|3rdparty/openxr/|tools/frame-xrprobe/)' || true)
 
 if [ -n "$files" ]; then
 	# shellcheck disable=SC2086

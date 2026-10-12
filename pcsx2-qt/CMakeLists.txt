@@ -190,6 +190,16 @@ target_sources(pcsx2-qt PRIVATE
 	resources/resources.qrc
 )
 
+# Outbreak VR (Steam Frame): the VR settings page, copied from PenguinScreen2. Its body calls into pcsx2/VR, which
+# is compiled only with ENABLE_OPENXR, so the page is too; SettingsWindow.cpp adds it under #ifdef ENABLE_OPENXR.
+if(ENABLE_OPENXR)
+	target_sources(pcsx2-qt PRIVATE
+		Settings/VRSettingsWidget.cpp
+		Settings/VRSettingsWidget.h
+		Settings/VRSettingsWidget.ui
+	)
+endif()
+
 if (NOT APPLE)
     target_sources(pcsx2-qt PRIVATE
         ShortcutCreationDialog.cpp
