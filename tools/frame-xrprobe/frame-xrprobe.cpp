@@ -919,8 +919,14 @@ namespace
 		// XDG_CONFIG_HOME (default ~/.config), each XDG_CONFIG_DIRS entry (default /etc/xdg), then the
 		// compiled-in SYSCONFDIR and /etc; in each, the arch-specific file before the plain one.
 		std::vector<std::string> candidates;
-		if (const char* env = std::getenv("XR_RUNTIME_JSON"); env && *env)
-			AddUnique(candidates, env);
+		const char* const override_json = std::getenv("XR_RUNTIME_JSON");
+		if (override_json && *override_json)
+		{
+			// The loader then reads this file and nothing else, even when it is missing; the rest of the list
+			// below is only what it would search without the variable.
+			Log("XR_RUNTIME_JSON is set, so the loader uses only %s", override_json);
+			AddUnique(candidates, override_json);
+		}
 		std::vector<std::string> prefixes;
 		const std::string home = EnvOr("HOME", "");
 		const std::string config_home = EnvOr("XDG_CONFIG_HOME", home.empty() ? "" : (home + "/.config").c_str());
@@ -936,6 +942,7 @@ namespace
 		}
 
 		Log("Runtime manifests, in the loader's search order (the first that exists is used):");
+		const bool overridden = override_json && *override_json;
 		bool found = false;
 		for (const std::string& c : candidates)
 		{
@@ -944,7 +951,8 @@ namespace
 				Log("  (missing) %s", c.c_str());
 				continue;
 			}
-			Log("  (exists)  %s%s", c.c_str(), found ? "" : "   <- the loader uses this one");
+			const bool used = !found && (!overridden || c == override_json);
+			Log("  (exists)  %s%s", c.c_str(), used ? "   <- the loader uses this one" : "");
 			DescribeManifest(c);
 			found = true;
 		}
@@ -959,7 +967,9 @@ namespace
 				DescribeManifest(def);
 			}
 		}
-		if (!found)
+		if (overridden && !PathExists(override_json))
+			Log("XR_RUNTIME_JSON names a file that does not exist, so the loader finds no runtime.");
+		else if (!found)
 			Log("No runtime manifest exists in any of those places.");
 	}
 
@@ -1148,10 +1158,30 @@ namespace
 		XrSystemGetInfo sgi = {XR_TYPE_SYSTEM_GET_INFO};
 		sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
 		XrResult r;
+		// The spec calls XR_ERROR_FORM_FACTOR_UNAVAILABLE temporary (the headset is asleep, still waking or
+		// reconnecting), so it is retried for a while: the wearer may only just have put the headset on.
+		constexpr int64_t kSystemWaitMs = 30000;
+		const int64_t wait_start = NowMs();
+		bool waited = false;
+		for (;;)
 		{
-			ScopedStep step("xrGetSystem");
-			r = xrGetSystem(s_instance, &sgi, &s_system);
+			{
+				ScopedStep step("xrGetSystem");
+				r = xrGetSystem(s_instance, &sgi, &s_system);
+			}
+			if (r != XR_ERROR_FORM_FACTOR_UNAVAILABLE || s_quit_signal || NowMs() - wait_start >= kSystemWaitMs)
+				break;
+			if (!waited)
+			{
+				Log("xrGetSystem: XR_ERROR_FORM_FACTOR_UNAVAILABLE (headset asleep or not ready). Retrying every second "
+					"for up to %lld s.",
+					static_cast<long long>(kSystemWaitMs / 1000));
+				waited = true;
+			}
+			std::this_thread::sleep_for(std::chrono::seconds(1));
 		}
+		if (waited && XR_SUCCEEDED(r))
+			Log("xrGetSystem succeeded after %lld s of retries.", static_cast<long long>((NowMs() - wait_start) / 1000));
 		if (XR_FAILED(r))
 		{
 			Log("No head-mounted system: xrGetSystem returned %s (%d). XR_ERROR_FORM_FACTOR_UNAVAILABLE usually means "
@@ -2059,13 +2089,19 @@ namespace
 		if (!SetUpActions())
 			Log("Controller actions are not set up; the colour phases still run.");
 
-		// Swapchains for the phases. A failure only drops the phases that need that swapchain.
+		// Swapchains for the phases. A failure only drops the phases that need that swapchain. One that failed
+		// half way (created, but its images or views not) is destroyed, so the frame loop, which goes by the
+		// handle, never clears a swapchain it has no images for.
+		const auto create = [](ProbeSwapchain& sc, const char* name, uint32_t width, uint32_t height, uint32_t layers) {
+			if (!CreateSwapchain(sc, name, width, height, layers))
+				DestroySwapchain(sc);
+		};
 		const uint32_t array_w = std::max(s_views[0].recommendedImageRectWidth, s_views[1].recommendedImageRectWidth);
 		const uint32_t array_h = std::max(s_views[0].recommendedImageRectHeight, s_views[1].recommendedImageRectHeight);
-		CreateSwapchain(s_sc_array, "A (arraySize 2)", array_w, array_h, 2);
-		CreateSwapchain(s_sc_eye[0], "left eye", s_views[0].recommendedImageRectWidth, s_views[0].recommendedImageRectHeight, 1);
-		CreateSwapchain(s_sc_eye[1], "right eye", s_views[1].recommendedImageRectWidth, s_views[1].recommendedImageRectHeight, 1);
-		CreateSwapchain(s_sc_quad, "quad/cylinder", 512, 288, 1);
+		create(s_sc_array, "A (arraySize 2)", array_w, array_h, 2);
+		create(s_sc_eye[0], "left eye", s_views[0].recommendedImageRectWidth, s_views[0].recommendedImageRectHeight, 1);
+		create(s_sc_eye[1], "right eye", s_views[1].recommendedImageRectWidth, s_views[1].recommendedImageRectHeight, 1);
+		create(s_sc_quad, "quad/cylinder", 512, 288, 1);
 		return Outcome::Ok;
 	}
 
