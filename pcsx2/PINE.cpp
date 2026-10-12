@@ -14,6 +14,23 @@
 #include "PINE.h"
 #include "SIO/Pad/Pad.h"
 #include "VMManager.h"
+#ifdef ENABLE_OPENXR
+#include "Counters.h"
+#include "MTGS.h"
+#include "VR/BeltPouches.h"
+#include "VR/CameraDriver.h"
+#include "VR/DepthHistogram.h"
+#include "VR/MemWatch.h"
+#include "VR/MenuPointer.h"
+#include "VR/VRInput.h"
+#include "fmt/format.h"
+#include <bit>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <utility>
+#endif
 #include "vtlb.h"
 #include "common/Error.h"
 #include "common/FPControl.h"
@@ -222,6 +239,15 @@ namespace PINEServer
 		MsgGSDump = 0x14, /**< Records a GS dump of the next N frames. */
 		MsgGetEffectiveSetting = 0x15, /**< Reads what a setting is actually running as. */
 		MsgPadSet = 0x30, /**< Sets one controller input (button or stick direction) to a 0..1 value. */
+#ifdef ENABLE_OPENXR
+		// Outbreak VR (PenguinScreen2): the headset-free test kit's commands.
+		MsgVRQhistFlush = 0xE0, /**< Writes the live depth histogram (--qhist-live, not ported: refused). */
+		MsgVRMemWatch = 0xE1, /**< Arms or clears a memory watch (never fires on the arm64 recompiler). */
+		MsgVRMemWatchPoll = 0xE2, /**< Drains the memory watch hits. */
+		MsgVRFakeInput = 0xE3, /**< Scripted VR controllers and head (PCSX2_VR_TEST_INPUT, offline only). */
+		MsgVRTelemetry = 0xE4, /**< What the first-person camera saw on its last vsync. */
+		MsgVRMenuPointer = 0xE5, /**< The menu pointer's and belt pouches' state, or a test hit. */
+#endif
 
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
@@ -322,6 +348,25 @@ namespace PINEServer
 		return !((command_len + command_size) > buf_size ||
 				 (reply_len + reply_size) >= MAX_IPC_RETURN_SIZE);
 	}
+
+#ifdef ENABLE_OPENXR
+	// MsgVRFakeInput fields, read one at a time at fixed little-endian offsets (never a struct copy).
+	static float ReadF32(std::span<u8> span, u32& at)
+	{
+		const float v = std::bit_cast<float>(FromSpan<u32>(span, at));
+		at += 4;
+		return v;
+	}
+
+	// Quaternion xyzw, then position xyz.
+	static void ReadPose(std::span<u8> span, u32& at, VR::VRPose* out)
+	{
+		for (float& c : out->orientation_xyzw)
+			c = ReadF32(span, at);
+		for (float& c : out->position_xyz)
+			c = ReadF32(span, at);
+	}
+#endif
 
 	/**
 	 * Reads a length-prefixed ([u32 len][len bytes], no NUL) string argument, advancing
@@ -1028,6 +1073,426 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				buf_cnt += 12;
 				break;
 			}
+#ifdef ENABLE_OPENXR
+			case MsgVRQhistFlush:
+			{
+				if (!VMManager::HasValidVM() || !VR::DepthHistogramArmed() || VR::QhistLiveDir().empty())
+				{
+					Console.Warning("(PINE) MsgVRQhistFlush refused: %s",
+						!VMManager::HasValidVM() ? "no VM" :
+							(!VR::DepthHistogramArmed() ? "histogram not armed (launch with --qhist-live <dir>)" :
+															"no live dir"));
+					goto error;
+				}
+				struct FlushState
+				{
+					std::mutex m;
+					std::condition_variable cv;
+					bool done = false;
+					bool ok = false;
+					std::string path;
+					std::string err;
+				};
+				auto st = std::make_shared<FlushState>();
+				Host::RunOnCPUThread([st]() {
+					MTGS::RunOnGSThread([st]() {
+					static std::atomic<u32> s_seq{0};
+					VR::DepthHistogram& h = VR::GlobalDepthHistogram();
+					h.key.serial = VMManager::GetDiscSerial();
+					h.key.crc = fmt::format("0x{:08x}", VMManager::GetDiscCRC());
+					h.key.dump = std::string();
+					h.key.frame = g_FrameCount;
+					h.key.widescreen_hack = EmuConfig.EnableWideScreenPatches;
+					const u32 seq = s_seq.fetch_add(1) + 1;
+					const std::string path = fmt::format("{}/qhist-live-{}-{:03d}-f{}.json",
+						VR::QhistLiveDir(), h.key.serial.empty() ? "unknown" : h.key.serial, seq, h.key.frame);
+					std::string err;
+					const bool ok = h.WriteJson(path, &err);
+					if (ok)
+						h.Reset();
+					std::lock_guard<std::mutex> lock(st->m);
+					st->ok = ok;
+					st->path = path;
+					st->err = err;
+					st->done = true;
+					st->cv.notify_one();
+					});
+				});
+				{
+					std::unique_lock<std::mutex> lock(st->m);
+					if (!st->cv.wait_for(lock, std::chrono::seconds(10), [&st] { return st->done; }))
+					{
+						Console.Warning("(PINE) MsgVRQhistFlush: GS thread did not service the flush in 10s (VM paused?)");
+						goto error;
+					}
+					if (!st->ok)
+					{
+						Console.ErrorFmt("(PINE) MsgVRQhistFlush: {}", st->err);
+						goto error;
+					}
+				}
+				const u32 size = static_cast<u32>(st->path.size()) + 1;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, size + 4, buf_size)) [[unlikely]]
+					goto error;
+				ToResultVector(ret_buffer, size, ret_cnt);
+				ret_cnt += 4;
+				memcpy(&ret_buffer[ret_cnt], st->path.c_str(), size);
+				ret_cnt += size;
+				break;
+			}
+			case MsgVRMemWatch:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				// Online (network adapter on) a state save/load or a MemWatch pause would stall or desync the room.
+				if (EmuConfig.DEV9.EthEnable)
+				{
+					Console.Warning("(PINE) %s refused: the network adapter is on.", "MsgVRMemWatch");
+					goto error;
+				}
+
+				if (!SafetyChecks(buf_cnt, 4 + 3, ret_cnt, 1, buf_size)) [[unlikely]]
+					goto error;
+				const u32 watch_addr = FromSpan<u32>(buf, buf_cnt);
+				const u8 watch_size = FromSpan<u8>(buf, buf_cnt + 4);
+				const u8 watch_cond = FromSpan<u8>(buf, buf_cnt + 5);
+				const u8 watch_stop = FromSpan<u8>(buf, buf_cnt + 6);
+				buf_cnt += 7;
+				// ARMSX2: no EE recompiler here has PenguinScreen2's MemWatch hit hook (it is in PenguinScreen2's x86 iR5900.cpp,
+				// and the Frame runs the arm64 recompiler, which has no memcheck at all), so a watch armed here never reports a hit.
+				static bool s_memwatch_arm64_noted = false;
+				if (!std::exchange(s_memwatch_arm64_noted, true))
+					Console.Warning("(PINE) MsgVRMemWatch: ARMSX2 has no MemWatch hit hook in its EE recompilers, so watches never report a hit.");
+
+				struct ArmState
+				{
+					std::mutex m;
+					std::condition_variable cv;
+					bool done = false;
+					int id = -1;
+				};
+				auto arm = std::make_shared<ArmState>();
+				Host::RunOnCPUThread([arm, watch_addr, watch_size, watch_cond, watch_stop]() {
+					int id;
+					if (watch_size == 0)
+					{
+						VR::MemWatchClearAll();
+						id = -2;
+					}
+					else
+					{
+						id = VR::MemWatchArm(watch_addr, watch_size, watch_cond, watch_stop != 0);
+					}
+					std::lock_guard<std::mutex> lock(arm->m);
+					arm->id = id;
+					arm->done = true;
+					arm->cv.notify_one();
+				});
+				{
+					std::unique_lock<std::mutex> lock(arm->m);
+					if (!arm->cv.wait_for(lock, std::chrono::seconds(10), [&arm] { return arm->done; }))
+					{
+						Console.Warning("(PINE) MsgVRMemWatch: the CPU thread did not service the request in 10s (VM shut down?)");
+						goto error;
+					}
+					if (arm->id == -1)
+					{
+						Console.Warning("(PINE) MsgVRMemWatch refused: bad size/cond, or no free watch slot");
+						goto error;
+					}
+					const u8 watch_id = (arm->id < 0) ? 0xFF : static_cast<u8>(arm->id);
+					ToResultVector(ret_buffer, watch_id, ret_cnt);
+				}
+				ret_cnt += 1;
+				break;
+			}
+			case MsgVRMemWatchPoll:
+			{
+				u32 dropped = 0;
+				const std::vector<VR::MemWatchHit> hits = VR::MemWatchDrain(&dropped);
+				const std::vector<u8> payload = VR::MemWatchTable::Serialize(hits, dropped);
+				const u32 size = static_cast<u32>(payload.size());
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, size + 4, buf_size)) [[unlikely]]
+					goto error;
+				ToResultVector(ret_buffer, size, ret_cnt);
+				ret_cnt += 4;
+				memcpy(&ret_buffer[ret_cnt], payload.data(), size);
+				ret_cnt += size;
+				break;
+			}
+			case MsgVRFakeInput:
+			{
+				// Scripted VR controllers for the headset-free test runner (tools/outbreak-vr/vrtest.py).
+				// Version 1, little-endian:
+				//   u8 ver (1), u8 flags (bit0 head valid, bit1 recenter after applying), u16 ttl_ms
+				//   head: 7 x f32 (quaternion xyzw, position xyz)
+				//   2 x hand (left, right): u8 flags (bit0 aim valid, bit1 grip valid, bit2 head-relative,
+				//     bit3 supplied: replace this hand), aim pose 7 x f32, grip pose 7 x f32,
+				//     trigger, grip, stick x, stick y (4 x f32), u32 buttons (VRHandState order from bit0)
+				// Reply: u8 1. Only with PCSX2_VR_TEST_INPUT set, and never while online play is possible:
+				// injected input must not reach other players.
+				constexpr int kPoseSize = 7 * 4;
+				constexpr int kHandSize = 1 + 2 * kPoseSize + 4 * 4 + 4;
+				constexpr int kFakeInputSize = 4 + kPoseSize + 2 * kHandSize;
+				if (!SafetyChecks(buf_cnt, kFakeInputSize, ret_cnt, 1, buf_size)) [[unlikely]]
+					goto error;
+				const char* refusal = nullptr;
+				if (!std::getenv("PCSX2_VR_TEST_INPUT"))
+					refusal = "PCSX2_VR_TEST_INPUT is not set";
+				else if (EmuConfig.VR.OnlineSafe || EmuConfig.DEV9.EthEnable)
+					refusal = "online-safe mode or the network adapter is on";
+				else if (FromSpan<u8>(buf, buf_cnt) != 1)
+					refusal = "unknown version";
+				if (refusal)
+				{
+					// A runner re-sends at 20 Hz; one line per hundred refusals is loud enough.
+					static u32 s_fake_input_refusals = 0;
+					if ((s_fake_input_refusals++ % 100) == 0)
+						Console.Warning("(PINE) MsgVRFakeInput refused: %s.", refusal);
+					goto error;
+				}
+
+				VR::XRInput::TestInput input;
+				u32 at = buf_cnt;
+				const u8 flags = FromSpan<u8>(buf, at + 1);
+				input.ttl_ms = FromSpan<u16>(buf, at + 2);
+				at += 4;
+				ReadPose(buf, at, &input.head_pose);
+				input.head_pose.valid = (flags & 0x01) != 0;
+				for (VR::XRInput::TestInput::Hand& hand : input.hands)
+				{
+					const u8 hand_flags = FromSpan<u8>(buf, at);
+					at += 1;
+					ReadPose(buf, at, &hand.aim_pose);
+					ReadPose(buf, at, &hand.grip_pose);
+					hand.aim_pose.valid = (hand_flags & 0x01) != 0;
+					hand.grip_pose.valid = (hand_flags & 0x02) != 0;
+					hand.head_relative = (hand_flags & 0x04) != 0;
+					hand.supplied = (hand_flags & 0x08) != 0;
+					hand.trigger = ReadF32(buf, at);
+					hand.grip = ReadF32(buf, at);
+					hand.thumbstick_x = ReadF32(buf, at);
+					hand.thumbstick_y = ReadF32(buf, at);
+					hand.buttons = FromSpan<u32>(buf, at);
+					at += 4;
+				}
+				buf_cnt += kFakeInputSize;
+
+				VR::XRInput::SetTestInput(input);
+				// After the head is in place, so the recenter takes the scripted head as forward.
+				if ((flags & 0x02) != 0)
+					VR::CameraDriver::RequestRecenter();
+				ToResultVector<u8>(ret_buffer, 1, ret_cnt);
+				ret_cnt += 1;
+				break;
+			}
+			case MsgVRTelemetry:
+			{
+				// What the first-person camera saw on its last vsync, for the test runner. Read-only.
+				// Reply: u32 size, then the payload (little-endian), version 1:
+				//   u8 ver (1), u8 flags (bit0 armed, bit1 lookAt active, bit2 pauseWhen hit, bit3 weapon
+				//   raised, bit4 walk-and-shoot moving, bit5 yaw anchor valid, bit6 online-safe, bit7 test
+				//   head), u8 disarm reason (CameraDriver::DisarmReason), u8 0, u32 guard-fail vsyncs,
+				//   f32 yaw anchor (rad), f32 base yaw now (rad), u32 match age, u32 frames matched,
+				//   u64 vsync, f32 prediction horizon (ms)
+				// Later versions only append, so a reader takes the size and the fields it knows.
+				constexpr u32 kTelemetrySize = 36;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, kTelemetrySize + 4, buf_size)) [[unlikely]]
+					goto error;
+				const VR::CameraDriver::Telemetry t = VR::CameraDriver::GetTelemetry();
+				u32 flags = 0;
+				flags |= t.armed ? 0x01u : 0u;
+				flags |= t.look_at_active ? 0x02u : 0u;
+				flags |= t.pause_when_hit ? 0x04u : 0u;
+				flags |= t.weapon_raised ? 0x08u : 0u;
+				flags |= t.aim_moving ? 0x10u : 0u;
+				flags |= t.yaw_anchor_valid ? 0x20u : 0u;
+				flags |= t.online_safe ? 0x40u : 0u;
+				flags |= t.test_head ? 0x80u : 0u;
+				ToResultVector(ret_buffer, kTelemetrySize, ret_cnt);
+				ret_cnt += 4;
+				ToResultVector<u8>(ret_buffer, 1, ret_cnt + 0);
+				ToResultVector<u8>(ret_buffer, static_cast<u8>(flags), ret_cnt + 1);
+				ToResultVector<u8>(ret_buffer, static_cast<u8>(t.disarm_reason), ret_cnt + 2);
+				ToResultVector<u8>(ret_buffer, 0, ret_cnt + 3);
+				ToResultVector<u32>(ret_buffer, t.guard_fail_vsyncs, ret_cnt + 4);
+				ToResultVector<float>(ret_buffer, t.yaw_anchor, ret_cnt + 8);
+				ToResultVector<float>(ret_buffer, t.base_yaw_now, ret_cnt + 12);
+				ToResultVector<u32>(ret_buffer, t.match_age, ret_cnt + 16);
+				ToResultVector<u32>(ret_buffer, t.frames_matched, ret_cnt + 20);
+				ToResultVector<u64>(ret_buffer, t.vsync, ret_cnt + 24);
+				ToResultVector<float>(ret_buffer, t.prediction_ms, ret_cnt + 32);
+				ret_cnt += kTelemetrySize;
+				break;
+			}
+			case MsgVRMenuPointer:
+			{
+				// The menu pointer (VR::MenuPointer) for the test runner (tools/outbreak-vr/menutest.py). The first byte is
+				// the op.
+				// op 0, read-only, any time. Reply: u32 size, then the payload (little-endian), version 1:
+				//   u8 ver (1), u8 flags (bit0 screen transform valid, bit1 hit valid, bit2 hit by the right hand, bit3 menu
+				//   mode, bit4 point-to-select running, bit5 steering, bit6 confirm held back, bit7 suspended or latched),
+				//   u8 flags2 (bit0 menu tablet, bit1 PINE test hit, bit2 self-check failed, bit3 refused online by
+				//   coop: false), s8 hovered, s8 current, s8 target, u8 presses toward target, u8 D-pad (0xFF none),
+				//   f32 u, v, hit distance, f32 screen centre xyz, quaternion xyzw, half width, half height,
+				//   u32 cursor node, presses, arrivals, aborts, landing ticks, confirms passed, confirms swallowed
+				// Later versions only append, so a reader takes the size and the fields it knows.
+				// op 1: a test hit: u8 ver (1), u8 hand (0 left, 1 right), u16 ttl_ms, f32 u, f32 v (u below 0 clears it).
+				// Reply: u8 1. Refused as MsgVRFakeInput is: only with PCSX2_VR_TEST_INPUT set, and never while online play
+				// is possible.
+				// op 2, read-only, any time: the belt pouches (VR::BeltPouches) and the pouch requests the menu pointer took.
+				// Reply: u32 size, then the payload (little-endian), version 1:
+				//   u8 ver (1), u8 flags (bit0 pouches running, bit1 item screen up, bit2 menu mode, bit3 head anchor, bit4
+				//   open press on, bit5 a pouches.suspendWhen guard passes, bit6 left grip a pouch's, bit7 right grip a
+				//   pouch's), u8 pouch count, s8 left hand's pouch, s8 right hand's pouch, s8 the menu pointer's waiting
+				//   request (-1 none), u8 0, u8 0,
+				//   u32 reaches, item double ticks, squeezes, open presses, requests sent, squeezes refused,
+				//   u32 menu pointer requests received, started, refused, lapsed,
+				//   8 x (f32 centre xyz in the XR base space, f32 radius, s8 cell, s8 item (1 holds one, 0 empty, -1 not
+				//   read), u8 item byte, u8 0)
+				// Later versions only append, so a reader takes the size and the fields it knows.
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+				const u8 op = FromSpan<u8>(buf, buf_cnt);
+				if (op == 2)
+				{
+					constexpr u32 kPouchesSize = 208;
+					static_assert(VR::BeltPouches::kMaxPouches == 8, "the op 2 reply holds 8 pouches");
+					if (!SafetyChecks(buf_cnt, 1, ret_cnt, kPouchesSize + 4, buf_size)) [[unlikely]]
+						goto error;
+					buf_cnt += 1;
+					const VR::BeltPouches::Telemetry bt = VR::BeltPouches::GetTelemetry();
+					const VR::MenuPointer::Telemetry mt = VR::MenuPointer::GetTelemetry();
+					u32 pouch_flags = 0;
+					pouch_flags |= bt.active ? 0x01u : 0u;
+					pouch_flags |= bt.screen_up ? 0x02u : 0u;
+					pouch_flags |= bt.menu_mode ? 0x04u : 0u;
+					pouch_flags |= bt.head_anchor ? 0x08u : 0u;
+					pouch_flags |= bt.open_pressing ? 0x10u : 0u;
+					pouch_flags |= bt.suspended ? 0x20u : 0u;
+					pouch_flags |= bt.owned[0] ? 0x40u : 0u;
+					pouch_flags |= bt.owned[1] ? 0x80u : 0u;
+					ToResultVector(ret_buffer, kPouchesSize, ret_cnt);
+					ret_cnt += 4;
+					ToResultVector<u8>(ret_buffer, 1, ret_cnt + 0);
+					ToResultVector<u8>(ret_buffer, static_cast<u8>(pouch_flags), ret_cnt + 1);
+					ToResultVector<u8>(ret_buffer, bt.count, ret_cnt + 2);
+					ToResultVector<s8>(ret_buffer, bt.hover[0], ret_cnt + 3);
+					ToResultVector<s8>(ret_buffer, bt.hover[1], ret_cnt + 4);
+					ToResultVector<s8>(ret_buffer, mt.request, ret_cnt + 5);
+					ToResultVector<u8>(ret_buffer, 0, ret_cnt + 6);
+					ToResultVector<u8>(ret_buffer, 0, ret_cnt + 7);
+					ToResultVector<u32>(ret_buffer, bt.enters, ret_cnt + 8);
+					ToResultVector<u32>(ret_buffer, bt.item_ticks, ret_cnt + 12);
+					ToResultVector<u32>(ret_buffer, bt.squeezes, ret_cnt + 16);
+					ToResultVector<u32>(ret_buffer, bt.opens, ret_cnt + 20);
+					ToResultVector<u32>(ret_buffer, bt.requests, ret_cnt + 24);
+					ToResultVector<u32>(ret_buffer, bt.refused, ret_cnt + 28);
+					ToResultVector<u32>(ret_buffer, mt.requests, ret_cnt + 32);
+					ToResultVector<u32>(ret_buffer, mt.requests_started, ret_cnt + 36);
+					ToResultVector<u32>(ret_buffer, mt.requests_refused, ret_cnt + 40);
+					ToResultVector<u32>(ret_buffer, mt.requests_lapsed, ret_cnt + 44);
+					for (u32 i = 0; i < 8; i++)
+					{
+						const VR::BeltPouches::Telemetry::PouchView& pv = bt.pouches[i];
+						const u32 pouch_at = ret_cnt + 48 + i * 20;
+						ToResultVector<float>(ret_buffer, pv.centre[0], pouch_at + 0);
+						ToResultVector<float>(ret_buffer, pv.centre[1], pouch_at + 4);
+						ToResultVector<float>(ret_buffer, pv.centre[2], pouch_at + 8);
+						ToResultVector<float>(ret_buffer, pv.radius, pouch_at + 12);
+						ToResultVector<s8>(ret_buffer, pv.cell, pouch_at + 16);
+						ToResultVector<s8>(ret_buffer, pv.item, pouch_at + 17);
+						ToResultVector<u8>(ret_buffer, pv.item_byte, pouch_at + 18);
+						ToResultVector<u8>(ret_buffer, 0, pouch_at + 19);
+					}
+					ret_cnt += kPouchesSize;
+					break;
+				}
+				if (op == 0)
+				{
+					constexpr u32 kMenuPointerSize = 84;
+					if (!SafetyChecks(buf_cnt, 1, ret_cnt, kMenuPointerSize + 4, buf_size)) [[unlikely]]
+						goto error;
+					buf_cnt += 1;
+					const VR::MenuPointer::Telemetry t = VR::MenuPointer::GetTelemetry();
+					u32 flags = 0;
+					flags |= t.transform_valid ? 0x01u : 0u;
+					flags |= t.hit_valid ? 0x02u : 0u;
+					flags |= t.hit_right ? 0x04u : 0u;
+					flags |= t.menu_mode ? 0x08u : 0u;
+					flags |= t.gate ? 0x10u : 0u;
+					flags |= t.in_flight ? 0x20u : 0u;
+					flags |= t.confirm_held ? 0x40u : 0u;
+					flags |= t.suspended ? 0x80u : 0u;
+					u32 flags2 = 0;
+					flags2 |= t.tablet ? 0x01u : 0u;
+					flags2 |= t.test_hit ? 0x02u : 0u;
+					flags2 |= t.selfcheck_failed ? 0x04u : 0u;
+					flags2 |= t.refused_online ? 0x08u : 0u;
+					ToResultVector(ret_buffer, kMenuPointerSize, ret_cnt);
+					ret_cnt += 4;
+					ToResultVector<u8>(ret_buffer, 1, ret_cnt + 0);
+					ToResultVector<u8>(ret_buffer, static_cast<u8>(flags), ret_cnt + 1);
+					ToResultVector<u8>(ret_buffer, static_cast<u8>(flags2), ret_cnt + 2);
+					ToResultVector<s8>(ret_buffer, t.hovered, ret_cnt + 3);
+					ToResultVector<s8>(ret_buffer, t.current, ret_cnt + 4);
+					ToResultVector<s8>(ret_buffer, t.target, ret_cnt + 5);
+					ToResultVector<u8>(ret_buffer, t.presses_target, ret_cnt + 6);
+					ToResultVector<u8>(ret_buffer, static_cast<u8>((t.dir < 0) ? 0xFF : t.dir), ret_cnt + 7);
+					ToResultVector<float>(ret_buffer, t.u, ret_cnt + 8);
+					ToResultVector<float>(ret_buffer, t.v, ret_cnt + 12);
+					ToResultVector<float>(ret_buffer, t.hit_distance, ret_cnt + 16);
+					for (u32 i = 0; i < 3; i++)
+						ToResultVector<float>(ret_buffer, t.centre[i], ret_cnt + 20 + i * 4);
+					for (u32 i = 0; i < 4; i++)
+						ToResultVector<float>(ret_buffer, t.quat[i], ret_cnt + 32 + i * 4);
+					ToResultVector<float>(ret_buffer, t.half_width, ret_cnt + 48);
+					ToResultVector<float>(ret_buffer, t.half_height, ret_cnt + 52);
+					ToResultVector<u32>(ret_buffer, t.node_raw, ret_cnt + 56);
+					ToResultVector<u32>(ret_buffer, t.presses_total, ret_cnt + 60);
+					ToResultVector<u32>(ret_buffer, t.arrivals, ret_cnt + 64);
+					ToResultVector<u32>(ret_buffer, t.aborts, ret_cnt + 68);
+					ToResultVector<u32>(ret_buffer, t.ticks, ret_cnt + 72);
+					ToResultVector<u32>(ret_buffer, t.confirms_passed, ret_cnt + 76);
+					ToResultVector<u32>(ret_buffer, t.confirms_swallowed, ret_cnt + 80);
+					ret_cnt += kMenuPointerSize;
+					break;
+				}
+				if (op != 1)
+				{
+					Console.Warning("(PINE) MsgVRMenuPointer: unknown op %u.", static_cast<unsigned>(op));
+					goto error;
+				}
+				constexpr int kTestHitSize = 1 + 12;
+				if (!SafetyChecks(buf_cnt, kTestHitSize, ret_cnt, 1, buf_size)) [[unlikely]]
+					goto error;
+				const char* refusal = nullptr;
+				if (!std::getenv("PCSX2_VR_TEST_INPUT"))
+					refusal = "PCSX2_VR_TEST_INPUT is not set";
+				else if (EmuConfig.VR.OnlineSafe || EmuConfig.DEV9.EthEnable)
+					refusal = "online-safe mode or the network adapter is on";
+				else if (FromSpan<u8>(buf, buf_cnt + 1) != 1)
+					refusal = "unknown version";
+				if (refusal)
+				{
+					// A runner re-sends at 20 Hz; one line per hundred refusals is loud enough.
+					static u32 s_test_hit_refusals = 0;
+					if ((s_test_hit_refusals++ % 100) == 0)
+						Console.Warning("(PINE) MsgVRMenuPointer test hit refused: %s.", refusal);
+					goto error;
+				}
+				const u8 hand = FromSpan<u8>(buf, buf_cnt + 2);
+				const u16 ttl_ms = FromSpan<u16>(buf, buf_cnt + 3);
+				u32 at = buf_cnt + 5;
+				const float hit_u = ReadF32(buf, at);
+				const float hit_v = ReadF32(buf, at);
+				buf_cnt += kTestHitSize;
+				VR::XRInput::SetTestScreenHit(hand, hit_u, hit_v, ttl_ms);
+				ToResultVector<u8>(ret_buffer, 1, ret_cnt);
+				ret_cnt += 1;
+				break;
+			}
+#endif
 			case MsgPadSet:
 			{
 				// [u8 controller][u8 bind][f32 value]. Lets a script drive the game without the
@@ -1060,6 +1525,15 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			{
 				if (!VMManager::HasValidVM())
 					goto error;
+#ifdef ENABLE_OPENXR
+				// Online (network adapter on) a state save/load would stall or desync the room (VMManager refuses it too;
+				// this fails the command instead of answering OK).
+				if (VMManager::IsOnlineLocked())
+				{
+					Console.Warning("(PINE) %s refused: the network adapter is on.", "MsgSaveState");
+					goto error;
+				}
+#endif
 				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
 					goto error;
 				Host::RunOnCPUThread([slot = FromSpan<u8>(buf, buf_cnt)] {
@@ -1074,6 +1548,15 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			{
 				if (!VMManager::HasValidVM())
 					goto error;
+#ifdef ENABLE_OPENXR
+				// Online (network adapter on) a state save/load would stall or desync the room (VMManager refuses it too;
+				// this fails the command instead of answering OK).
+				if (VMManager::IsOnlineLocked())
+				{
+					Console.Warning("(PINE) %s refused: the network adapter is on.", "MsgLoadState");
+					goto error;
+				}
+#endif
 				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
 					goto error;
 				Host::RunOnCPUThread([slot = FromSpan<u8>(buf, buf_cnt)] {
