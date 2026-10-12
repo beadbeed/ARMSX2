@@ -12,7 +12,9 @@
 #      and "No OpenXR runtime is available". The VR profiles are in the AppDir.
 #   4. launch-outbreak-vr.sh with no game: writes the first-run ini (the settings
 #      version ARMSX2 expects, VR on, head camera and stereo off), says no game was
-#      given and exits 2; a second run leaves the ini alone.
+#      given and exits 2; a second run leaves the ini alone. ARMSX2 -testconfig then
+#      loads that ini without resetting it, and makes the BIOS and VR profile folders
+#      under ~/.config/ARMSX2.
 #   5. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
 #      GLIBC_ symbol version above 2.39.
 #   6. bash -n passes on the scripts.
@@ -206,6 +208,22 @@ if [ -f "$ini" ]; then
 	"${NO_RUNTIME_ENV[@]}" HOME="$home" "$appdir/launch-outbreak-vr.sh" >/dev/null 2>&1
 	set -e
 	grep -q 'frame-smoke: left alone' "$ini" || note "launch-outbreak-vr.sh rewrote an existing ini"
+
+	# ARMSX2 takes the first-run ini as it is (with a settings version it does not expect, it would write its
+	# defaults over the file and open the setup wizard), and its BIOS and VR profile folders end up under
+	# ~/.config/ARMSX2. -testconfig loads the settings, creates the folders and exits.
+	echo "== armsx2-qt -testconfig with the first-run ini"
+	set +e
+	"${NO_RUNTIME_ENV[@]}" HOME="$home" QT_QPA_PLATFORM=offscreen timeout 120 "$appdir/AppRun" -testconfig >"$work/testconfig.txt" 2>&1
+	code=$?
+	set -e
+	cat "$work/testconfig.txt"
+	[ "$code" -eq 0 ] || note "-testconfig with the first-run ini: exit code $code, expected 0"
+	for want in 'SetupWizardIncomplete = false' 'HeadCamera = false' 'StereoMode = false'; do
+		grep -qx "$want" "$ini" || note "after -testconfig the ini lacks '$want' (ARMSX2 replaced it with its defaults?)"
+	done
+	[ -d "$home/.config/ARMSX2/bios" ] || note "-testconfig made no BIOS folder at ~/.config/ARMSX2/bios"
+	[ -d "$home/.config/ARMSX2/vrprofiles" ] || note "-testconfig made no VR profiles folder at ~/.config/ARMSX2/vrprofiles"
 else
 	note "launch-outbreak-vr.sh wrote no first-run ini at $ini"
 fi

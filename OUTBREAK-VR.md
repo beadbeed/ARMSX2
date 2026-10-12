@@ -84,4 +84,5 @@ comes up, the Frame controllers work the menus and move the character, the speed
 
 **CI.** Besides the probe checks, the `frame-smoke` job now runs `AppRun -vr-info` with no display and no runtime
 (the version line and "No OpenXR runtime is available"), checks the VR profiles are in the AppDir, runs the
-launcher with no game (first-run ini written, exit 2), and runs the hook audit.
+launcher with no game (first-run ini written, exit 2), runs `AppRun -testconfig` on that ini (loaded without a
+reset, BIOS folder at `~/.config/ARMSX2/bios`), and runs the hook audit.

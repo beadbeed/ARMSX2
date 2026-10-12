@@ -125,13 +125,20 @@ VR layer or OpenXR is under `#ifdef ENABLE_OPENXR` (ARMSX2's own stereo code und
 
 ## Status of this slice (2026-10-12)
 
-Done and green in CI (see the run ids in the commit messages and `frame/README-FRAME.md`):
+Done and green in CI ("Outbreak VR (Steam Frame build)" on `outbreak-vr-frame`: run 38212330071 on 64bccdc7a0 for
+1 below, run 38214286969 on 6560910264 for 1-3; the build, the unit tests and frame-smoke all passed):
 
 1. The VR layer, the profiles and the shims, built with clang 17 on ubuntu-24.04-arm.
 2. The M0 hooks above: the queue lock, LSFG off in VR, the GSRenderer frame hooks, the VMManager settings
    hooks, the input source and binding overlay, `--vr`, `-vr-info`, the profile check at launch and the
    no-pause rule.
 3. `frame/launch-outbreak-vr.sh` with the first-run ini, the frame-smoke additions and the hook audit.
+
+The first-run ini, checked: it has `[UI] SettingsVersion = 1`, so ARMSX2 loads it as it is instead of writing
+its defaults over it (frame-smoke runs `-testconfig` on it and checks nothing was reset). Keys it leaves out keep
+ARMSX2's defaults: Pad1 is a DualShock 2, the `VR` input source is on, and the BIOS folder is
+`~/.config/ARMSX2/bios`. The ini writes no pad bindings, so Pad1 gets only the VR profile's VR Gamepad bindings
+(the binding overlay, section `Pad1`); a keyboard or a Steam Input pad does nothing until bound in the ini.
 
 Not done, next:
 
