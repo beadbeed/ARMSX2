@@ -27,9 +27,10 @@ build without a headset or runtime and checks that nothing needs a newer glibc t
 
 - SSH (recommended): copy the `.tar.zst` to the Frame, extract it there with `tar --zstd -xf` into
   `~/outbreak-vr`, then run `sleep 30 && ./frame-probe.sh` in the new folder and put the headset on.
-- Devkit title: in the SteamOS Devkit Client, set Local Folder to the extracted folder and Start Command to
-  `frame-probe.sh`, then launch "Devkit Game: frame-xrprobe" on the Frame. If it does not start, use SSH,
-  because a folder copied from Windows can lose its permissions.
+- Devkit title: in the SteamOS Devkit Client, set Name to `frame_xrprobe` (a title id may not contain `-`),
+  Local Folder to the extracted folder and Start Command to `frame-probe.sh`, then launch
+  "Devkit Game: frame_xrprobe" on the Frame. If it does not start, use SSH, because a folder copied from
+  Windows can lose its permissions.
 - Launch options: `FRAME_NO_FDM=1` if the log stops at xrCreateVulkanDeviceKHR, and `--seconds-per-phase N`
   to show each colour longer.
 

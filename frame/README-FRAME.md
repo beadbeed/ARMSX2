@@ -30,9 +30,11 @@ Over SSH, give yourself time to put the headset on:
     cd ~/outbreak-vr/outbreak-vr-frame-<sha>
     sleep 30 && ./frame-probe.sh
 
-Or as a devkit title (SteamOS Devkit Client on the PC): Name `frame-xrprobe`, Local Folder = the extracted
-folder, Start Command `frame-probe.sh`. Launch "Devkit Game: frame-xrprobe" from the Frame's library. If the
-title does not start, use SSH instead (a folder copied from Windows can lose its permissions).
+Or as a devkit title (SteamOS Devkit Client on the PC): Name `frame_xrprobe` (letters, digits, `_` and `.`
+only: a title id may not contain `-`), Local Folder = the extracted folder, Start Command `frame-probe.sh`.
+Launch "Devkit Game: frame_xrprobe" from the Frame's library. If the title does not start, use SSH instead
+(a folder copied from Windows can lose its permissions). The launch log says whether the title ran inside
+the Steam Runtime container or on SteamOS itself.
 
 Launch options, if needed (Steam > the title > Properties, or before the command over SSH):
 
@@ -62,7 +64,9 @@ From the PC: `scp -r steamos@frame:frame-probe ./frame-probe-logs`
 
 ## Careful
 
-- If it hangs, the log says "STILL WAITING" every 10 s. Stop it once (Ctrl+C, or stop the title).
+- If it hangs, the log says "STILL WAITING" every 10 s. Stop it once (Ctrl+C, or stop the title) and give
+  it up to 20 s to close the session; a second Ctrl+C kills it at once. A call that never returns ends the
+  probe by itself after 2 minutes ("GIVING UP" in the log, exit code 3).
 - Do not restart SteamVR over and over: three failed SteamVR runs in one boot trigger SteamOS's health
   check, which wipes `~/.local/share/Steam`. Reboot the Frame instead.
 - The headset must be on your head (not in standby) for the colours to appear.
