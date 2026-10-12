@@ -778,6 +778,10 @@ bool PINEServer::Initialize(int slot)
 		Deinitialize();
 		return false;
 	}
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame): where the research and test tools (tools/outbreak-vr/pine.py) find PINE.
+	Console.WriteLnFmt("PINE: Listening on {}.", s_socket_name);
+#endif
 #endif
 
 	// maximum queue of 4096 commands before refusing, approximated to the

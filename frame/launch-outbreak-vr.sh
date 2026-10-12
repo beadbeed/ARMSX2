@@ -17,11 +17,13 @@
 #   FRAME_VR_LOG_DIR=D log somewhere other than ~/armsx2-vr/logs
 #   FRAME_VIEW=first-person   set [VR] HeadCamera and StereoMode to true in the ini (the M1 view), then start
 #   FRAME_VIEW=flat           set them to false (M0's flat screen), then start
+#   FRAME_PINE=1       set [EmuCore] EnablePINE = true in the ini (=0: false), for the research and test tools
+#                      (tools/outbreak-vr/pine.py; PINE listens on $XDG_RUNTIME_DIR/pcsx2.sock while a game runs)
 #
 # First run: if ~/.config/ARMSX2/inis/PCSX2.ini does not exist, this writes a small one for the headset:
 # no setup wizard, Vulkan at 1x, MTVU on, VR on with the first-person camera and stereo on (M1). Later
 # runs leave the ini alone, so change it freely (or delete it to get this one back). FRAME_VIEW changes
-# only those two keys and keeps everything else.
+# only those two keys and FRAME_PINE only EnablePINE; both keep everything else.
 
 set -u
 
@@ -148,6 +150,30 @@ if [ -r "$INI" ]; then
 	if [ -z "${FRAME_VIEW:-}" ] && grep -qE '^HeadCamera[ \t]*=[ \t]*false' "$INI"; then
 		log "This ini has M0's flat screen (HeadCamera = false). For first person, run once with FRAME_VIEW=first-person (or delete the ini)."
 	fi
+fi
+
+# FRAME_PINE: PINE on or off, written into [EmuCore] (the section is added if the ini has none).
+set_emucore_pine() {
+	local value=$1 tmp="$INI.pine.$$"
+	awk -v v="$value" '
+		function add_missing() { if (in_core && !done) { print "EnablePINE = " v; done = 1 } }
+		/^\[/ { add_missing(); in_core = ($0 == "[EmuCore]"); if (in_core) seen = 1; print; next }
+		in_core && /^EnablePINE[ \t]*=/ { if (!done) print "EnablePINE = " v; done = 1; next }
+		{ print }
+		END { add_missing(); if (!seen) { print ""; print "[EmuCore]"; print "EnablePINE = " v } }
+	' "$INI" >"$tmp" && mv "$tmp" "$INI"
+}
+case "${FRAME_PINE:-}" in
+	"") ;;
+	1 | on | true)
+		set_emucore_pine true && log "FRAME_PINE=$FRAME_PINE: [EmuCore] EnablePINE = true in $INI" ;;
+	0 | off | false)
+		set_emucore_pine false && log "FRAME_PINE=$FRAME_PINE: [EmuCore] EnablePINE = false in $INI" ;;
+	*)
+		log "FRAME_PINE=$FRAME_PINE is not 1 or 0; the ini is left as it is" ;;
+esac
+if [ -r "$INI" ] && grep -qE '^EnablePINE[ \t]*=[ \t]*true' "$INI"; then
+	log "PINE is on: while the game runs, tools/outbreak-vr/pine.py reaches it at ${XDG_RUNTIME_DIR:-/tmp}/pcsx2.sock (slot 28011)"
 fi
 
 # The game: $1, or the first line of ~/armsx2-vr/game.txt.

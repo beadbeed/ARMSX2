@@ -15,10 +15,13 @@
 #      given and exits 2; a second run leaves the ini alone. ARMSX2 -testconfig then
 #      loads that ini without resetting it, and makes the BIOS and VR profile folders
 #      under ~/.config/ARMSX2. FRAME_VIEW=flat and FRAME_VIEW=first-person switch
-#      [VR] HeadCamera and StereoMode and keep the rest of the ini.
+#      [VR] HeadCamera and StereoMode and keep the rest of the ini. FRAME_PINE=1 and FRAME_PINE=0 switch
+#      [EmuCore] EnablePINE the same way.
 #   5. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
 #      GLIBC_ symbol version above 2.39.
 #   6. bash -n passes on the scripts.
+#   7. tools/outbreak-vr/pine.py reaches a fake PINE server on its Unix socket ($XDG_RUNTIME_DIR/pcsx2.sock,
+#      .<slot> for another slot) and over TCP (pine-transport-test.py).
 # Usage: frame-smoke.sh <directory holding outbreak-vr-frame-*.tar.zst>
 
 set -euo pipefail
@@ -239,6 +242,24 @@ if [ -f "$ini" ]; then
 		grep -q 'frame-smoke: view kept' "$ini" || note "FRAME_VIEW=$view dropped other lines of the ini"
 	done
 	grep -h 'FRAME_VIEW=' "$home"/armsx2-vr/logs/launch-*.log || note "FRAME_VIEW: nothing about it in the launch logs"
+
+	echo "== launch-outbreak-vr.sh FRAME_PINE=1, then FRAME_PINE=0"
+	echo "# frame-smoke: pine kept?" >>"$ini"
+	for pine_value in 1 0; do
+		set +e
+		"${NO_RUNTIME_ENV[@]}" HOME="$home" FRAME_PINE=$pine_value "$appdir/launch-outbreak-vr.sh" >/dev/null 2>&1
+		set -e
+		value=true
+		[ "$pine_value" = 0 ] && value=false
+		awk -v want="EnablePINE = $value" '/^\[/ { in_core = ($0 == "[EmuCore]") } in_core && $0 == want { found = 1 } END { exit !found }' "$ini" ||
+			note "FRAME_PINE=$pine_value: [EmuCore] lacks 'EnablePINE = $value'"
+		[ "$(grep -c '^EnablePINE' "$ini")" -eq 1 ] || note "FRAME_PINE=$pine_value: EnablePINE is in the ini more than once"
+		for want in 'HeadCamera = true' 'StereoMode = true' 'Enable = true' 'SettingsVersion = 1'; do
+			grep -qx "$want" "$ini" || note "FRAME_PINE=$pine_value: the ini lacks '$want'"
+		done
+		grep -q 'frame-smoke: pine kept' "$ini" || note "FRAME_PINE=$pine_value dropped other lines of the ini"
+	done
+	grep -h 'FRAME_PINE=' "$home"/armsx2-vr/logs/launch-*.log || note "FRAME_PINE: nothing about it in the launch logs"
 	[ -d "$home/.config/ARMSX2/bios" ] || note "-testconfig made no BIOS folder at ~/.config/ARMSX2/bios"
 	[ -d "$home/.config/ARMSX2/vrprofiles" ] || note "-testconfig made no VR profiles folder at ~/.config/ARMSX2/vrprofiles"
 else
@@ -265,6 +286,13 @@ while IFS= read -r -d '' f; do
 done < <(find "$appdir" -type f -print0)
 echo "ELF files checked: $checked; the highest GLIBC_ version any of them needs: ${highest:-none}"
 [ "$checked" -gt 0 ] || note "no ELF files found in the AppDir"
+
+echo "== pine.py transport (tools/outbreak-vr/pine-transport-test.py)"
+if python3 tools/outbreak-vr/pine-transport-test.py; then
+	:
+else
+	note "pine-transport-test.py failed"
+fi
 
 echo "== bash -n"
 for s in frame/*.sh "$appdir/frame-probe.sh" "$appdir/launch-outbreak-vr.sh" .github/workflows/scripts/linux/frame-smoke.sh \
