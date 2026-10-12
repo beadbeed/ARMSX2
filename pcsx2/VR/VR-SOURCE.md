@@ -51,6 +51,19 @@ Every change made here to a file copied from PenguinScreen2, to be ported back:
 
 Every M1 edit in XRCompositor.cpp is marked with a comment that starts `ARMSX2 (Steam Frame M1)`.
 
+**M2 made no edit to the copied files.** Its changes are all in shared ARMSX2 files (hook table below). A few of them
+differ from PenguinScreen2 on purpose, and are worth porting back:
+
+| ARMSX2 file | Line | What | Why |
+|---|---|---|---|
+| `pcsx2/VMManager.cpp` | 3137 | `FrameAdvance` refuses online | frame advance ends in a pause through `SetState`, not `SetPaused`, so the `SetPaused` lock misses it. PenguinScreen2 refuses it only in the FrameAdvance hotkey; ARMSX2's PINE `MsgFrameAdvance` comes here too. **Port back.** |
+| `pcsx2/VMManager.cpp` | 395 | `OnlineLockRefusesStateLoad` and `OnlineLockRefusesStateSave` | PenguinScreen2's four refusals as two helpers, with the same log lines and messages. Optional. |
+| `pcsx2/Hotkeys.cpp` | 51 | the target-speed lock is in `HotkeyAdjustTargetSpeed`, not in the IncreaseSpeed and DecreaseSpeed hotkeys | an `#ifdef` inside a `DEFINE_HOTKEY(...)` argument is a directive inside macro arguments, which is not portable, so the per-hotkey guards are not ported. VMManager refuses the limiter, frame advance and state hotkeys itself, with its own message. |
+| `pcsx2/Hotkeys.cpp` | 173 | `CanPause` refuses online only while the VM is running | a VM paused before the adapter was switched on can still be resumed with the hotkey. **Port back.** |
+| `pcsx2-qt/MainWindow.cpp` | 118 | `PauseLockedOnline` asks `VMManager::IsOnlineLocked()` | so `PCSX2_TEST_ONLINE_LOCKS=1` also covers the Qt pause buttons (PenguinScreen2 reads `DEV9.EthEnable`). **Port back.** |
+| `pcsx2/PINE.cpp` | 1528, 1551 | `MsgSaveState` and `MsgLoadState` refuse through `VMManager::IsOnlineLocked()` | same reason |
+| `pcsx2/PINE.cpp` | 1161 | `MsgVRMemWatch` logs once that watches never report a hit | no ARMSX2 EE recompiler has the MemWatch hit hook (see the iR5900 row) |
+
 **clang 17 fixes: none were needed.** The first CI build with the whole VR layer (run 38212330071, clang 17,
 libstdc++ 14, ubuntu-24.04-arm) compiled and linked every copied file as it is, so nothing has to be ported back
 to PenguinScreen2 from this slice. (The VR layer was written Linux-first, and its printf formats, 64-bit literals
@@ -63,7 +76,7 @@ What the VR layer needs from the rest of the emulator that ARMSX2 did not have:
 | File | What |
 |---|---|
 | `pcsx2/Config.h`, `pcsx2/Pcsx2Config.cpp` | `Pcsx2Config::VROptions` (copied unchanged from PenguinScreen2 `Config.h`), its `LoadSave` (ini section `[VR]`), `operator==`/`!=`, the `VR` member and its `LoadSave` call; `EmuFolders::VRProfiles` (`[Folders] VRProfiles`, default `vrprofiles` under the data folder) with its default, log line and folder creation. Its keys do not clash with StereoSettings' `[VR]` keys. |
-| `pcsx2/VMManager.h/.cpp` | `VMManager::IsOnlineLocked()`: the network adapter is on, or `PCSX2_TEST_ONLINE_LOCKS=1`. PenguinScreen2 also enforces the online locks inside VMManager (no pause, speed change or state load/save online); that is not ported yet. |
+| `pcsx2/VMManager.h/.cpp` | `VMManager::IsOnlineLocked()`: the network adapter is on, or `PCSX2_TEST_ONLINE_LOCKS=1`. Since M2, VMManager enforces the online locks as PenguinScreen2 does (hook table). |
 | `pcsx2/GS/Renderers/Common/GSDevice.h/.cpp` | `GSDevice::ShadeBoost(const GSVector4& params)`: ShadeBoost with explicit parameters, per layer, for the headset's presentation lift. |
 | `pcsx2/SIO/Pad/PadBase.h`, `PadDualshock2.h` | `PadBase::GetAxisScale()` (1.0 by default; the DualShock 2 returns its axis scale), read by VRInputSource. |
 | `pcsx2/Input/InputManager.h/.cpp` | `InputSourceType::VR` and its name `"VR"` (on by default), the VRInputSource registration, the VR binding overlay (`SetVRBindingOverlay`, `GetVRBindingOverlay`, `HasVRBindingOverlay`) merged into the pad and USB bindings, and the rumble hooks (`GameFeedback::OnPadRumble`, `PauseRumble`). |
@@ -73,7 +86,7 @@ What the VR layer needs from the rest of the emulator that ARMSX2 did not have:
 ## Hook sites
 
 PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef ENABLE_OPENXR` lines on
-`outbreak-vr-frame` after this slice.
+`outbreak-vr-frame` after M2.
 
 | Where | PenguinScreen2 | ARMSX2 | Status |
 |---|---|---|---|
@@ -96,15 +109,24 @@ PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef 
 | GSRenderer: `VR::EndOfFrame` in PresentCurrentFrame | 956 | 1623 | M0, done |
 | GSRenderer: `PCSX2_VR_SNAPSHOT_LAYER` in SaveSnapshotToMemory | 1023 | 1709, 1722 | M1, done (`current` is non-const under `ENABLE_OPENXR` only) |
 | VMManager: includes | VMManager.cpp 6 | VMManager.cpp 7 | M0, done; M1 added HudCards and SplitState |
-| VMManager: `IsOnlineLocked` | 332 | 391 | M0 shim, done |
-| VMManager: `VR::UpdateSettings` in CPUThreadInitialize | 437 | 543 | M0, done |
-| VMManager: `VR::UpdateSettings` in UpdateDiscDetails | 1125 | 1476 | M0, done |
-| VMManager: `VR::ClearSpatialControls` in ClearDiscDetails | 1155 | 1508 | M0, done (after releasing the info lock, as PenguinScreen2 does) |
-| VMManager: `CameraDriver::OnStateLoaded`, `GameFeedback::OnStateLoaded` in DoLoadState | 1864 | 2598 | M0, done |
-| VMManager: per-vsync block (`CameraDriver::Apply`, `GameFeedback::Poll`, `HudCards::Poll`, `ApplySceneStereo`, `SplitState::Apply`, GS dump trigger) | 2877 | 3687 | M1, done, same order as PenguinScreen2 |
-| VMManager: `StereoSettings::Apply` in LoadSettings | none | 766 (ENABLE_VR) | M1: publishes nothing with `ENABLE_OPENXR` (see above) |
-| VMManager: `VR::UpdateSettings` when `[VR]` changes | 3113 | 3934 | M0, done |
-| VMManager: online locks in SetPaused, DoLoadState, DoSaveState, SetLimiterMode, UpdateTargetSpeed | 1471-2747 | none | M2 or before any online play |
+| VMManager: `IsOnlineLocked` (and M2's state load and save refusal helpers) | 332 | 395 | M0 shim, done; M2 added the helpers |
+| VMManager: `VR::UpdateSettings` in CPUThreadInitialize | 437 | 570 | M0, done |
+| VMManager: `VR::UpdateSettings` in UpdateDiscDetails | 1125 | 1503 | M0, done |
+| VMManager: `VR::ClearSpatialControls` in ClearDiscDetails | 1155 | 1535 | M0, done (after releasing the info lock, as PenguinScreen2 does) |
+| VMManager: `CameraDriver::OnStateLoaded`, `GameFeedback::OnStateLoaded` in DoLoadState | 1864 | 2640 | M0, done |
+| VMManager: per-vsync block (`CameraDriver::Apply`, `GameFeedback::Poll`, `HudCards::Poll`, `ApplySceneStereo`, `SplitState::Apply`, GS dump trigger) | 2877 | 3796 | M1, done, same order as PenguinScreen2 |
+| VMManager: `StereoSettings::Apply` in LoadSettings | none | 788 (ENABLE_VR) | M1: publishes nothing with `ENABLE_OPENXR` (see above) |
+| VMManager: `VR::UpdateSettings` when `[VR]` changes | 3113 | 4089 | M0, done |
+| VMManager online lock: Initialize (the boot turbo/unlimited options are ignored, the limiter is Nominal) | 1471 | 2205 | M2, done |
+| VMManager online lock: DoLoadState, DoSaveState | 1845, 1880 | 2623, 2656 | M2, done |
+| VMManager online lock: LoadState (before DoLoadState, so a refusal does not reset the VM), LoadStateFromSlot | 2016, 2048 | 2803, 2836 | M2, done |
+| VMManager online lock: SetLimiterMode (Nominal only), UpdateTargetSpeed (held at 100%, no host-refresh retiming) | 2144, 2201 | 2931, 2987 | M2, done |
+| VMManager online lock: FrameAdvance | none (the hotkey only) | 3137 | M2, ARMSX2's own (see the local edits) |
+| VMManager online lock: SetPaused | 2747 | 3646 | M2, done |
+| VMManager online lock: CheckForDEV9ConfigChanges (adapter switched on: Nominal, speed re-clamped) | 3017 | 3962 | M2, done |
+| MainWindow: `PauseLockedOnline` | MainWindow.cpp 1415 | MainWindow.cpp 118 | M2, done (asks `IsOnlineLocked`) |
+| MainWindow: the pause buttons refused online (`onPauseActionToggled`) | 630, 633, 1425 | 667, 687 (a lambda in place of the slot) | M2, done |
+| MainWindow: no game-list view online (it pauses) | 1447 | 1455 | M2, done |
 | InputManager.h: `InputSourceType::VR`, binding overlay declarations | InputManager.h 32, 252 | InputManager.h 31, 322 | M0, done |
 | InputManager.cpp: GameFeedback include | 12 | 23 | M0, done |
 | InputManager.cpp: overlay storage | 121 | 145 | M0, done |
@@ -122,9 +144,16 @@ PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef 
 | QtHost: `--vr` / `-vr`, `-vr-info` | 2196 | 2185 | M0, done. `--vr-seat`, `--vr-cast` and `--qhist-live` are not ported. |
 | QtHost: `ProfileDB::ValidateAtLaunch` dialog | 2527 | 2501 | M0, done; each issue is also written to the log, because on the Frame the dialog may open where nobody sees it |
 | SettingsWindow: the VR settings page (VRSettingsWidget) | SettingsWindow.cpp 25, 201 | none | M5 |
-| PadDualshock2: PadLook probes, recenter chord, right-stick look | PadDualshock2.cpp 15-310 | none (only `GetAxisScale`) | M1/M2 |
-| Hotkeys: VR recenter, headset brightness up/down | Hotkeys.cpp 12, 99, 198 | none | M2 |
-| PINE: VR fake input, qhist flush (0xE0-0xE5) | PINE.cpp 11, 205, 552 | none | M2 (headset-free test kit) |
+| PadDualshock2: includes (PadLook, SplitState) | PadDualshock2.cpp 15 | PadDualshock2.cpp 15 | M2, done |
+| PadDualshock2: pad 1's buttons through `PadLook::ProbeButtons`, the L1+R1+L3+R3 recenter chord | 205, 210 | 218 | M2, done |
+| PadDualshock2: right stick X through `PadLook::ApplyRx` (not in split-screen), the stick and Cross/Square pressure probes | 262-310 | 282, 294, 300, 309, 327, 333 | M2, done |
+| Hotkeys: includes (CameraDriver, HudCards, XRCompositor) | Hotkeys.cpp 12 | Hotkeys.cpp 12 | M2, done |
+| Hotkeys: `HotkeyAdjustVRBrightness` | 99 | 122 | M2, done |
+| Hotkeys: VRRecenterHead, VRBrightnessUp, VRBrightnessDown | 198 | 217 | M2, done |
+| Hotkeys: online locks (`OnlineLocked`, slot load and save, `CanPause`, target speed) | 118-157, and in 12 hotkeys | 34, 51, 141, 162, 173 | M2, done in the functions; the per-hotkey guards are not ported (see the local edits) |
+| PINE: includes, the 0xE0-0xE5 enum values, `ReadF32` and `ReadPose` | PINE.cpp 11, 149, 205 | PINE.cpp 17, 242, 352 | M2, done |
+| PINE: MsgVRQhistFlush, MsgVRMemWatch, MsgVRMemWatchPoll, MsgVRFakeInput, MsgVRTelemetry, MsgVRMenuPointer | 552 | 1076 | M2, done, copied as it is (plus the MemWatch note). ARMSX2's own commands (0x10-0x15, MsgPadSet 0x30) are unchanged. MsgVRQhistFlush is refused until `--qhist-live` is ported. |
+| PINE: MsgSaveState, MsgLoadState refused online | 983, 1004 | 1528, 1551 | M2, done |
 | GSRendererHW: includes (DepthHistogram) | 14 | 34 | M1, done |
 | GSRendererHW: Z-to-1/w fit | 25 | 39 (ENABLE_VR) | ARMSX2's own port of it, on every stereo build |
 | GSRendererHW: snapshot layer on the frame and render-target dumps | 383, 419, 4776, 4968 | 37 (`VRSnapshotLayer`), 443, 473, 5928, 6084 | M1, done |
@@ -133,7 +162,7 @@ PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef 
 | GSTextureCache: display-chain stereo promotion, two-layer targets | GSTextureCache.cpp 13, 81, 3505, 6368 | 4265, 7817 (ARMSX2's own per-eye targets, ENABLE_VR) | M1: the same switch as above |
 | tfx.glsl (Vulkan): the linear map's near floor (`vr_splits.x`), the roll terms (`vr_splits.y/.z`) | 63, 116-129, 483-496 | 75, 149, 579 | M1, done. Each new term applies only when its constant is non-zero, so every shader without first person computes exactly what it did. The OpenGL, D3D and Metal shaders are not changed (the Frame uses Vulkan). |
 | gsrunner: stereo replay, qhist | Main.cpp (9 sites) | none | M2 (headset-free test kit; GS dumps never go in CI) |
-| iR5900 (x86): MemWatch hit hook | iR5900.cpp 19, 1479 | none | needs an arm64 memcheck; MemWatch stays inactive |
+| iR5900 (x86): MemWatch hit hook | iR5900.cpp 19, 1479 | none | needs an arm64 memcheck; MemWatch stays inactive (PINE arms watches and logs once that they never report a hit) |
 
 `tools/outbreak-vr/hook-audit.sh` checks that every line added to a shared file since 3cf66e03aa that mentions the
 VR layer or OpenXR is under `#ifdef ENABLE_OPENXR` (ARMSX2's own stereo code under `ENABLE_VR` is exempt), and that
@@ -217,7 +246,57 @@ Not done, next:
   each game frame at the display rate, so 72 Hz against a 30 fps game shows each image about 2.4 times.
 - The multiview self-test on lavapipe in CI is not ported (the M1 brief's optional item).
 - M2: controls (PadLook in PadDualshock2, gesture zones, recenter, the hotkeys), the online locks in VMManager,
-  PINE and the gsrunner stereo replay (the headset-free test kit). The hook-parity allowlist lists each.
+  PINE and the gsrunner stereo replay (the headset-free test kit). The hook-parity allowlist lists each. (Done
+  except the gsrunner replay: see "Status of M2" below.)
 - Still open from M0: which Frame controller profile path SteamVR accepts (`/interaction_profiles/valve/frame_controller`
   in VRInput.cpp, `.../frame_controller_valve` in Valve's docs; VRInput falls back to the Touch and simple profiles).
 - The Monado-in-CI stretch goal was not attempted.
+
+## Status of M2 (2026-10-12)
+
+CI ("Outbreak VR (Steam Frame build)", dispatched on `outbreak-vr-frame`): run 38225845140 on 6e69b43be9 (priorities
+1 and 2) passed: the build, the unit tests, frame-smoke, the hook audit and the hook parity check. Priorities 3-5:
+the next run (recorded here when it is done).
+
+Done (the M2 brief's five priorities):
+
+1. **The online locks.** Online (network adapter on, or `PCSX2_TEST_ONLINE_LOCKS=1`) the game never pauses, changes
+   speed, or loads or saves a state. VMManager refuses at SetPaused, FrameAdvance (ARMSX2's own), DoLoadState,
+   DoSaveState, LoadState (before DoLoadState, so a refusal never resets the VM), LoadStateFromSlot and SetLimiterMode
+   (anything but Nominal); UpdateTargetSpeed holds the speed at 100% with no host-refresh retiming; boot ignores the
+   turbo and unlimited options; switching the adapter on mid-game drops to Nominal at once. The Qt pause buttons and
+   the game-list view (which pauses) are refused online, so the buttons never stay checked over a running game. The
+   hotkeys say why (save and load slot, pause, target speed), and PINE's MsgSaveState and MsgLoadState fail online.
+2. **The controls.** PadDualshock2 sends pad 1 through PenguinScreen2's PadLook: the button and stick probes, the
+   L1+R1+L3+R3 recenter chord, and the right stick's X turning the first-person view (`PadLook::ApplyRx`, not in
+   split-screen). The rest of the controls (gesture zones, smooth and snap turn, the reset chord on both thumbsticks,
+   the grab breakout, haptics) were already in the copied VR layer and VRInputSource; they needed only this hook.
+   Hotkeys: VR recenter (head camera and screen) and headset brightness up and down (saved in `[VR] Brightness`).
+3. **PINE 0xE0-0xE5**, copied as they are, next to ARMSX2's own commands (0x10-0x15 and MsgPadSet 0x30, unchanged).
+   MsgVRFakeInput and the MsgVRMenuPointer test hit need `PCSX2_VR_TEST_INPUT` and are refused online.
+   MsgVRQhistFlush is refused until `--qhist-live` is ported. MemWatch arms watches, but no ARMSX2 EE recompiler has
+   the hit hook (the arm64 recompiler has no memcheck at all), so a watch never reports a hit; PINE logs that once.
+4. **Cheap extras.** The Frame's system recenter needed nothing: the copied XRSession already handles
+   `XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING` for the LOCAL space (ignored in the first 2 s of a session,
+   then a recenter of first person and the screens 300 ms later). Seated play is the VR layer's default (a LOCAL
+   reference space; the Outbreak profiles hang the belt pouches from the seated player, `pouches.anchor: seat`), and
+   so is smooth turning; the launcher's first-run ini now says `SnapTurn = false`, and frame-smoke checks it.
+5. **Docs:** this file, the hook-parity allowlist (the PadDualshock2, Hotkeys and PINE entries are gone),
+   `OUTBREAK-VR.md` and `frame/README-FRAME.md` (section 4, the M2 headset checklist).
+
+hook-parity at c2c5ee2: 85 PenguinScreen2 `ENABLE_VR` blocks; 58 ported, 5 ported less allowlisted parts, 22
+allowlisted (gsrunner, the VR settings page, the DATE warning, the x86 MemWatch hook, ARMSX2's own forms), plus the
+3 shader terms.
+
+Not done, next:
+
+- Nothing has run in a headset. Alex's next session on the Frame: the M1 checklist (README-FRAME.md section 3), then
+  the M2 one (section 4).
+- Not ported: the per-hotkey online guards (see the local edits; VMManager covers them), the gsrunner stereo replay
+  and `--qhist-live` (GS dumps never go in CI), the VR settings page (M5), and the MemWatch hit hook (needs a memcheck
+  in ARMSX2's arm64 recompiler).
+- Not tested in CI: the locks themselves (no game runs in CI). To check them by hand: start a game with
+  `PCSX2_TEST_ONLINE_LOCKS=1` and try pause, turbo, a state save and a state load; each is refused with a
+  `(VMManager) ... refused` line.
+- M3 next: hands, the HUD, the wrist card, the menu pointer, belt pouches and brightness in the headset. Most of it is
+  in the copied VR layer already; the work is checking it on the Frame.

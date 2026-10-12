@@ -1,4 +1,4 @@
-# Steam Frame: frame-xrprobe and Outbreak VR (M0 and M1)
+# Steam Frame: frame-xrprobe and Outbreak VR (M0, M1 and M2)
 
 This folder holds two things for the Steam Frame:
 
@@ -7,9 +7,11 @@ This folder holds two things for the Steam Frame:
   driver and queues it hands out, whether both eyes get their own picture, and whether a flat or curved screen
   layer shows up. It needs no BIOS, disc or save.
 - **Outbreak VR**: ARMSX2 with the OpenXR VR layer, played with the Frame controllers as the pad.
-  - **M1 (this build, the default):** first person. In a room, the game camera is the character's eyes and turns
+  - **M1 (the default):** first person. In a room, the game camera is the character's eyes and turns
     with your head, and both eyes get their own picture, so the room has depth. Menus, doors and cutscenes go
     back to a flat screen.
+  - **M2 (this build):** the PC build's controls and safety rules on top of M1: smooth turn, recenter, the grab
+    breakout, haptics, and the online locks (no pause, speed change or savestate while the network adapter is on).
   - **M0** (`FRAME_VIEW=flat`): the game on a fixed flat screen about 2 m in front of you.
 
   Run the probe first: if the probe fails, the game will too, and the probe log says why.
@@ -83,8 +85,8 @@ outbreak_vr". The same launch options work (`FRAME_NO_FDM=1`, `FRAME_NO_GSWSI=1`
 
 The first run writes `~/.config/ARMSX2/inis/PCSX2.ini` for the headset: no setup wizard, Vulkan at 1x
 internal resolution, MTVU on, `[VR] Enable = true` with `HeadCamera = true` and `StereoMode = true` (first person,
-M1). Later runs leave it alone; delete it to get the first-run one back. The script stops with a message in the log
-if the game or the BIOS is missing.
+M1) and `SnapTurn = false` (smooth turn, M2). Later runs leave it alone; delete it to get the first-run one back. The
+script stops with a message in the log if the game or the BIOS is missing.
 
 **If you ran M0 before:** its ini has `HeadCamera = false` and `StereoMode = false`, and the launch log says so.
 Run once with `FRAME_VIEW=first-person` in front of the command (or as a launch option). The launcher sets those
@@ -140,11 +142,42 @@ The log lines that tell us what happened (all in `~/armsx2-vr/logs/launch-*.log`
 - `(VR) StereoSettings: the OpenXR VR layer owns the stereo state`: the stereo settings came from `[VR] StereoMode`
   and the game profile.
 
+## 4. Controls (M2)
+
+Play offline first (Single Play, network adapter off), seated, with both Frame controllers on before launching.
+The same launch as section 3. Load a save in File #1 or File #2, walk into a room in first person, and check:
+
+1. **Walking.** The left stick walks where you look (stick up = forward). Click the left stick while walking to run.
+2. **Aiming and shooting.** Squeeze the right grip at your right hip (the holster) and keep squeezing to raise the
+   weapon. The character aims where the right controller points, up and down too, and the right trigger fires.
+   A thin red laser shows the aim. The left stick still walks while you aim.
+3. **Smooth turn.** The right stick turns the view smoothly (left and right only; a mostly vertical push does not
+   turn). It should feel even, with no judder. (`[VR] SnapTurn = true` in the ini gives 30 degree steps instead.)
+4. **Recenter.** Face to one side and hold both thumbsticks down for half a second: the view and the screens face
+   you again. The Frame's own recenter (from the system menu) does the same. The log has
+   `(VR) VRInputSource: reset chord` or `(VR) Reference space recentered by the runtime`.
+5. **Grab breakout.** Let a zombie grab you and shake either controller hard: the character breaks free about as
+   fast as mashing buttons would. "Shake to break free!" shows on the first grab.
+6. **Haptics.** The controllers buzz when you shoot, when you are hit, and with the game's own rumble. Note anything
+   too weak, too strong or missing.
+7. **A controller sleeping and waking leaves nothing stuck.** Put one controller down until it sleeps (or turn it
+   off), then wake it up. Nothing should keep walking, turning, aiming or firing by itself. If something is stuck, hold
+   both thumbsticks for half a second (the reset chord sets every control back to idle), and write down what was stuck.
+8. **Headset brightness.** If the picture is too dark, the VR brightness hotkeys (when bound) change it in steps of
+   0.1, and the headset shows "Brightness 1.10" and so on. The value is saved.
+
+It passes if 1-7 hold and the log has no "(VR) ... abandon" line.
+
+**Online (only when you play online):** with the network adapter on, the game must never pause, change speed or load
+or save a state. Pausing, turbo or a savestate is refused with a message, and the log has a
+`(VMManager) ... refused: the network adapter is on` line. Before going online, you can try this offline: launch with
+`PCSX2_TEST_ONLINE_LOCKS=1` in front of the command.
+
 ## Logs to send back
 
 - Probe: `~/frame-probe/probe-*.log` (the answers) and `~/frame-probe/launch-*.log` (everything printed).
 - Game: `~/armsx2-vr/logs/launch-*.log` (everything printed, including the "(VR)" lines) and
-  `~/.config/ARMSX2/logs/emulog.txt`. For M1, also your notes on items 1-6 above.
+  `~/.config/ARMSX2/logs/emulog.txt`. For M1 and M2, also your notes on the items in sections 3 and 4.
 - From `~/.local/share/Steam/logs`: `xrclient_*.txt`, `vrserver.txt`, `vrcompositor.txt`.
 
 From the PC:

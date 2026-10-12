@@ -119,3 +119,29 @@ the world holds still when you turn your head (no swim); stereo depth looks righ
 keeps at least 95% speed for 10 minutes; loading a savestate keeps the camera. Send back `~/armsx2-vr/logs/launch-*.log`
 (with the `(VR) Pose-to-photon:`, `(VR) Frames:` and `(VR) First-person stereo:` lines), `emulog.txt` and SteamVR's
 logs.
+
+## Steam Frame: the PC build's controls and safety rules (M2)
+
+Branch `outbreak-vr-frame` now has the PC build's control scheme and its online rules. As before, every change to a
+shared ARMSX2 file is under `#ifdef ENABLE_OPENXR` (details and line numbers in `pcsx2/VR/VR-SOURCE.md`):
+
+- **Online locks.** With the network adapter on, the game never pauses, changes speed, or loads or saves a state:
+  the server drops a client that goes quiet and bans speed changes, and a state load desyncs the room. VMManager
+  refuses each one (pause, frame advance, turbo, slow motion, unlimited, target speed, every state load and save),
+  the Qt pause buttons and the game-list view are refused too, and the hotkeys and PINE say why.
+  `PCSX2_TEST_ONLINE_LOCKS=1` turns the locks on with the adapter off, for testing.
+- **Controls.** The pad goes through PenguinScreen2's PadLook: the right stick turns the first-person view, and
+  L1+R1+L3+R3 recenters. With the Frame controllers: walking on the left stick, aiming and shooting with the
+  controller, smooth turn on the right stick (`[VR] SnapTurn = true` for 30 degree steps), the gesture zones, the grab
+  breakout (shake a controller when a zombie grabs you), haptics from the game's rumble and cues, and the reset chord
+  (both thumbsticks held half a second: every control back to idle, and a recenter). The system recenter of the Frame
+  works too.
+- **Hotkeys:** VR recenter, and headset brightness up and down.
+- **PINE:** PenguinScreen2's test-kit commands 0xE0-0xE5 (scripted VR input only with `PCSX2_VR_TEST_INPUT` and never
+  online, telemetry, menu pointer and belt pouch state), next to ARMSX2's own PINE commands. Memory watches arm but never
+  fire on the Frame (its recompiler has no memory checks).
+- **Launcher:** the first-run ini says `SnapTurn = false` (smooth turn). Seated play is the default.
+
+**What to check in the headset** (step by step in `frame/README-FRAME.md`, section 4): walking, aiming and shooting,
+smooth turn, recenter (chord and the system recenter), the grab breakout, haptics, and that a controller going to sleep
+and waking up leaves nothing stuck.
