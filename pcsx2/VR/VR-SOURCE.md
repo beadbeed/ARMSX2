@@ -332,7 +332,11 @@ Not done, next:
 
 ## Status of M3 (2026-10-12)
 
-CI ("Outbreak VR (Steam Frame build)", dispatched on `outbreak-vr-frame`): RUNS_M3
+CI ("Outbreak VR (Steam Frame build)", dispatched on `outbreak-vr-frame`): run 38232856645 on a49528f14e (priorities
+2 and 3: the layer budget and the settings page) passed: the build, the unit tests, frame-smoke, the hook audit and the
+hook parity check. Run 38235007771 on 60f5acd299 (all five priorities) passed the same, with the new frame-smoke checks:
+`pine-transport-test.py` (the Unix socket at the default slot, at slot 28012 and through `PINE_SOCKET`, and TCP),
+`FRAME_PINE=1` and `=0`, and `tools/pine.py` in the bundle.
 
 Done (the M3 brief's five priorities):
 
