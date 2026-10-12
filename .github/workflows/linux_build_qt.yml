@@ -160,10 +160,20 @@ jobs:
           # Prepare the Cache
           ccache -p
           ccache -z
-          # Build
-          ninja
+          # Build. The Outbreak VR build (frameBundle) keeps going past a failed file, so one
+          # run lists every compiler error; every other caller stops at the first, as before.
+          ninja ${{ inputs.frameBundle && '-k 0' || '' }}
           # Save the Cache
           ccache -s
+
+      # Outbreak VR only: the cache action saves only after a green job, so without this every
+      # run after a failed build would recompile everything again.
+      - name: Save ccache after a failed build (Outbreak VR)
+        if: failure() && inputs.frameBundle == true
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
 
       - name: Run Tests
         working-directory: ./build
