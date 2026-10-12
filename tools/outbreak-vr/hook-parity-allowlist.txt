@@ -10,9 +10,7 @@
 # Not ported yet, with the milestone that brings them.
 pcsx2-gsrunner/Main.cpp | * | skip | gsrunner's stereo replay of GS dumps (qhist, -vr, the profile check): GS dumps never go in CI or the bundle; with the headset-free test kit (M2)
 pcsx2-qt/Settings/SettingsWindow.cpp | * | skip | the VR settings page (VRSettingsWidget): M5
-pcsx2/Hotkeys.cpp | * | skip | VR recenter and headset brightness hotkeys: M2
 pcsx2/PINE.cpp | * | skip | PINE VR fake input and the qhist flush (the headset-free test kit): M2
-pcsx2/SIO/Pad/PadDualshock2.cpp | * | skip | PadLook probes, the recenter chord and right-stick look: M2 controls (ARMSX2 has only GetAxisScale)
 pcsx2/x86/ix86-32/iR5900.cpp | * | skip | MemWatch hit hook in the x86 recompiler; the Frame runs ARMSX2's arm64 recompiler, which has no memcheck hook, so MemWatch stays inactive there
 pcsx2-qt/QtHost.cpp | vr-seat | differs | --vr and -vr-info and their help lines are ported; --vr-seat, --vr-cast (seat session and cast, M5 co-op) and --qhist-live (M2 test kit) are not
 pcsx2-qt/QtHost.cpp | DepthHistogram | omit:DepthHistogram | the qhist arguments, and so the DepthHistogram include, are not ported (M2 test kit)

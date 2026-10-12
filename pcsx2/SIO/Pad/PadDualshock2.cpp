@@ -12,6 +12,11 @@
 
 #include "IconsPromptFont.h"
 
+#ifdef ENABLE_OPENXR
+#include "VR/PadLook.h"
+#include "VR/SplitState.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 
@@ -210,7 +215,15 @@ u8 PadDualshock2::ButtonQuery(u8 commandByte)
 
 u8 PadDualshock2::Poll(u8 commandByte)
 {
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (PenguinScreen2): pad 1 goes through PadLook's probes, and L1+R1+L3+R3 held is the recenter chord.
+	const u32 buttons = (this->unifiedSlot == 0) ? VR::PadLook::ProbeButtons(GetButtons()) : GetButtons();
+	if (this->unifiedSlot == 0)
+		VR::PadLook::UpdateRecenterChord(IsButtonBitSet(buttons, 2), IsButtonBitSet(buttons, 3),
+			IsButtonBitSet(buttons, 9), IsButtonBitSet(buttons, 10));
+#else
 	const u32 buttons = GetButtons();
+#endif
 	u8 largeMotor = 0x00;
 	u8 smallMotor = 0x00;
 
@@ -266,15 +279,37 @@ u8 PadDualshock2::Poll(u8 commandByte)
 
 			return buttons & 0xff;
 		case 5:
+#ifdef ENABLE_OPENXR
+			// The right stick's X turns the first-person view (PadLook::ApplyRx), except in split-screen.
+			if (this->unifiedSlot == 0)
+			{
+				const u8 rx = VR::SplitState::Active()
+								  ? GetPressure(Inputs::PAD_R_RIGHT)
+								  : VR::PadLook::ApplyRx(GetPressure(Inputs::PAD_R_RIGHT));
+				return VR::PadLook::ProbeStick(VR::PadLook::StickAxis::RX, rx);
+			}
+#endif
 			return GetPressure(Inputs::PAD_R_RIGHT);
 		case 6:
+#ifdef ENABLE_OPENXR
+			if (this->unifiedSlot == 0)
+				return VR::PadLook::ProbeStick(VR::PadLook::StickAxis::RY, GetPressure(Inputs::PAD_R_UP));
+#endif
 			return GetPressure(Inputs::PAD_R_UP);
 		case 7:
+#ifdef ENABLE_OPENXR
+			if (this->unifiedSlot == 0)
+				return VR::PadLook::ProbeStick(VR::PadLook::StickAxis::LX, GetPressure(Inputs::PAD_L_RIGHT));
+#endif
 			return GetPressure(Inputs::PAD_L_RIGHT);
 		case 8:
 			// PS1 mode: If the controller reaches this byte, it is in analog mode and has irrefutably reached the last byte.
 			// There's simply nothing to check, we know it's done and time to stop acknowledgements.
 			g_Sio0.SetAcknowledge(false);
+#ifdef ENABLE_OPENXR
+			if (this->unifiedSlot == 0)
+				return VR::PadLook::ProbeStick(VR::PadLook::StickAxis::LY, GetPressure(Inputs::PAD_L_UP));
+#endif
 			return GetPressure(Inputs::PAD_L_UP);
 		case 9:
 			return IsButtonBitSet(buttons, 13) ? GetPressure(Inputs::PAD_RIGHT) : 0;
@@ -289,8 +324,16 @@ u8 PadDualshock2::Poll(u8 commandByte)
 		case 14:
 			return IsButtonBitSet(buttons, 5) ? GetPressure(Inputs::PAD_CIRCLE) : 0;
 		case 15:
+#ifdef ENABLE_OPENXR
+			if (this->unifiedSlot == 0)
+				return IsButtonBitSet(buttons, 6) ? VR::PadLook::ProbePressure(VR::PadLook::ProbeButton::CROSS, GetPressure(Inputs::PAD_CROSS)) : 0;
+#endif
 			return IsButtonBitSet(buttons, 6) ? GetPressure(Inputs::PAD_CROSS) : 0;
 		case 16:
+#ifdef ENABLE_OPENXR
+			if (this->unifiedSlot == 0)
+				return IsButtonBitSet(buttons, 7) ? VR::PadLook::ProbePressure(VR::PadLook::ProbeButton::SQUARE, GetPressure(Inputs::PAD_SQUARE)) : 0;
+#endif
 			return IsButtonBitSet(buttons, 7) ? GetPressure(Inputs::PAD_SQUARE) : 0;
 		case 17:
 			return IsButtonBitSet(buttons, 2) ? GetPressure(Inputs::PAD_L1) : 0;

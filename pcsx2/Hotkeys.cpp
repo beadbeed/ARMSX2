@@ -9,6 +9,11 @@
 #include "ImGui/ImGuiOverlays.h"
 #include "Input/InputManager.h"
 #include "Recording/InputRecording.h"
+#ifdef ENABLE_OPENXR
+#include "VR/CameraDriver.h"
+#include "VR/HudCards.h"
+#include "VR/XRCompositor.h"
+#endif
 #include "SPU2/spu2.h"
 #include "VMManager.h"
 #include "SIO/Memcard/MemoryCardFile.h"
@@ -26,8 +31,29 @@ void VMManager::Internal::ResetVMHotkeyState()
 	s_limiter_mode_prior_to_hold_interaction.reset();
 }
 
+#ifdef ENABLE_OPENXR
+// Outbreak VR online locks (PenguinScreen2 Hotkeys.cpp): online (network adapter on), nothing may pause the game, change
+// its speed or load/save a state: the server drops a client that goes quiet and bans speed changes, and a state load
+// desyncs the room. VMManager refuses each of these itself; this says why at the hotkey.
+static bool OnlineLocked()
+{
+	if (!VMManager::IsOnlineLocked())
+		return false;
+	Host::AddKeyedOSDMessage("HotkeyOnlineLocked",
+		TRANSLATE_STR("Hotkeys", "Disabled while the network adapter is on (no pause, speed change or save state online)."),
+		Host::OSD_QUICK_DURATION);
+	return true;
+}
+#endif
+
 static void HotkeyAdjustTargetSpeed(double delta)
 {
+#ifdef ENABLE_OPENXR
+	// PenguinScreen2 refuses this in the IncreaseSpeed and DecreaseSpeed hotkeys; here, so the target speed is not
+	// changed (and announced) while VMManager holds the game at 100%.
+	if (OnlineLocked())
+		return;
+#endif
 	const double min_speed = Achievements::IsHardcoreModeActive() ? 1.0 : 0.1;
 	EmuConfig.EmulationSpeed.NominalScalar = std::max(min_speed, EmuConfig.EmulationSpeed.NominalScalar + delta);
 	if (VMManager::GetLimiterMode() != LimiterModeType::Nominal)
@@ -93,8 +119,29 @@ static void HotkeyToggleMute()
 		Host::AddIconOSDMessage("VolumeChanged", ICON_FA_VOLUME_XMARK, TRANSLATE_STR("Hotkeys_Volume", "Volume: Muted in Settings"));
 }
 
+#ifdef ENABLE_OPENXR
+// VR headset brightness (the presentation lift's gamma scale). Saved so it survives a restart; the
+// lift reads EmuConfig each vsync, so nothing else needs reapplying.
+static void HotkeyAdjustVRBrightness(const float delta)
+{
+	const float value = std::clamp(std::round((EmuConfig.VR.Brightness + delta) * 100.0f) / 100.0f,
+		Pcsx2Config::VROptions::MIN_BRIGHTNESS, Pcsx2Config::VROptions::MAX_BRIGHTNESS);
+	EmuConfig.VR.Brightness = value;
+	Host::SetBaseFloatSettingValue("VR", "Brightness", value);
+	Host::CommitBaseSettingChanges();
+	Host::AddKeyedOSDMessage("VRBrightness",
+		fmt::format(TRANSLATE_FS("Hotkeys", "VR brightness: {:.2f}"), value), Host::OSD_QUICK_DURATION);
+	// The OSD isn't in the headset; the toast is (shown only while a VR session runs).
+	VR::HudCards::Toast(fmt::format("Brightness {:.2f}", value));
+}
+#endif
+
 static void HotkeyLoadStateSlot(s32 slot)
 {
+#ifdef ENABLE_OPENXR
+	if (OnlineLocked())
+		return;
+#endif
 	// Can reapply settings and thus binds, therefore must be deferred.
 	Host::RunOnCPUThread([slot]() {
 		if (!VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), slot))
@@ -112,6 +159,10 @@ static void HotkeyLoadStateSlot(s32 slot)
 
 static void HotkeySaveStateSlot(s32 slot)
 {
+#ifdef ENABLE_OPENXR
+	if (OnlineLocked())
+		return;
+#endif
 	VMManager::SaveStateToSlot(slot, true, [slot](const std::string& error) {
 		FullscreenUI::ReportStateSaveError(error, slot);
 	});
@@ -119,6 +170,11 @@ static void HotkeySaveStateSlot(s32 slot)
 
 static bool CanPause()
 {
+#ifdef ENABLE_OPENXR
+	// Unlike PenguinScreen2, a VM that is already paused (the adapter was switched on while paused) may still resume.
+	if (VMManager::GetState() != VMState::Paused && OnlineLocked())
+		return false;
+#endif
 	static constexpr const float PAUSE_INTERVAL = 3.0f;
 	static Common::Timer::Value s_last_pause_time = 0;
 
@@ -158,6 +214,27 @@ DEFINE_HOTKEY("OpenPauseMenu", TRANSLATE_NOOP("Hotkeys", "Navigation"), TRANSLAT
 		if (!pressed && VMManager::HasValidVM() && CanPause())
 			FullscreenUI::OpenPauseMenu();
 	})
+#ifdef ENABLE_OPENXR
+DEFINE_HOTKEY("VRRecenterHead", TRANSLATE_NOOP("Hotkeys", "VR"), TRANSLATE_NOOP("Hotkeys", "VR: Recenter Head Camera"),
+	[](s32 pressed) {
+		if (!pressed)
+		{
+			VR::CameraDriver::RequestRecenter();
+			VR::XRCompositor::RequestScreenReanchor();
+			Host::AddKeyedOSDMessage("VRRecenter", TRANSLATE_STR("Hotkeys", "VR recentered (head + screen)."), 2.0f);
+		}
+	})
+DEFINE_HOTKEY("VRBrightnessUp", TRANSLATE_NOOP("Hotkeys", "VR"), TRANSLATE_NOOP("Hotkeys", "VR: Increase Headset Brightness"),
+	[](s32 pressed) {
+		if (!pressed)
+			HotkeyAdjustVRBrightness(0.1f);
+	})
+DEFINE_HOTKEY("VRBrightnessDown", TRANSLATE_NOOP("Hotkeys", "VR"), TRANSLATE_NOOP("Hotkeys", "VR: Decrease Headset Brightness"),
+	[](s32 pressed) {
+		if (!pressed)
+			HotkeyAdjustVRBrightness(-0.1f);
+	})
+#endif
 DEFINE_HOTKEY("OpenAchievementsList", TRANSLATE_NOOP("Hotkeys", "Navigation"),
 	TRANSLATE_NOOP("Hotkeys", "Open Achievements List"), [](s32 pressed) {
 		if (!pressed && CanPause())
