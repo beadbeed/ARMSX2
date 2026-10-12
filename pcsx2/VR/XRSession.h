@@ -44,6 +44,9 @@ namespace VR::XRSession
 
 	bool HasCylinderLayer();
 
+	// ARMSX2 (Steam Frame M3): the system's maxLayerCount from xrGetSystemProperties, 0 if it was not read.
+	u32 MaxLayerCount();
+
 	// XR_VALVE_frame_controller_interaction is enabled (SteamVR: Steam Frame controller bindings).
 	bool HasFrameControllerInteraction();
 

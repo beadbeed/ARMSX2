@@ -37,6 +37,9 @@ namespace VR::XRSession
 		// Set from the GS thread, the VR pacer and the Vulkan queue lock's timeout.
 		std::atomic_bool s_lost{false};
 		bool s_cylinder_supported = false;
+		// ARMSX2 (Steam Frame M3): the system's maxLayerCount (0 until xrGetSystemProperties answers), for the
+		// compositor's layer budget.
+		u32 s_max_layer_count = 0;
 		// PumpEvents runs on the VR pacer (headset-rate submission) or the GS thread, and the fault injection plays
 		// state changes from the pacer: one at a time.
 		std::mutex s_pump_mutex;
@@ -231,8 +234,10 @@ namespace VR::XRSession
 			enabled_extensions[enabled_count++] = kFrameControllerExtension;
 		ici.enabledExtensionCount = enabled_count;
 		ici.enabledExtensionNames = enabled_extensions;
+		// ARMSX2 (Steam Frame M3): the fallback is named in the line.
 		Console.WriteLn("(VR) Cylinder composition layers: %s.",
-			s_cylinder_supported ? "supported (curved screen available)" : "not offered by the runtime");
+			s_cylinder_supported ? "supported (curved screen available)" :
+			                       "not offered by the runtime (a curved screen is shown as a flat quad)");
 		if (s_frame_controller_supported)
 			Console.WriteLn("(VR) Steam Frame controller interaction: offered by the runtime, enabled.");
 #else
@@ -268,8 +273,15 @@ namespace VR::XRSession
 		}
 
 		XrSystemProperties sp = {XR_TYPE_SYSTEM_PROPERTIES};
+		s_max_layer_count = 0;
 		if (CheckXR(xrGetSystemProperties(s_instance, s_system_id, &sp), "xrGetSystemProperties"))
+		{
 			Console.WriteLn("(VR) HMD: %s", sp.systemName);
+			// ARMSX2 (Steam Frame M3): the runtime's layer limit, logged at every session start.
+			s_max_layer_count = sp.graphicsProperties.maxLayerCount;
+			Console.WriteLn("(VR) Runtime limits: maxLayerCount %u, swapchain images up to %ux%u.", s_max_layer_count,
+				sp.graphicsProperties.maxSwapchainImageWidth, sp.graphicsProperties.maxSwapchainImageHeight);
+		}
 
 #ifdef ENABLE_VULKAN
 #define LOAD_XR_FN(name) \
@@ -604,6 +616,12 @@ namespace VR::XRSession
 	bool HasCylinderLayer()
 	{
 		return s_cylinder_supported;
+	}
+
+	// ARMSX2 (Steam Frame M3)
+	u32 MaxLayerCount()
+	{
+		return s_max_layer_count;
 	}
 
 	bool HasFrameControllerInteraction()

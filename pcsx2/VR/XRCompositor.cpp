@@ -160,6 +160,46 @@ namespace VR::XRCompositor
 		constexpr u8 kKindQuad = 0;
 		constexpr u8 kKindCylinder = 1;
 
+		// ARMSX2 (Steam Frame M3): the layer budget. A runtime whose maxLayerCount (XRSession::MaxLayerCount) is below
+		// kLayerCapacity + 1 gets at most that many layers a frame: BuildSubmitArray drops the least important first, by
+		// these ranks (lowest first): the toast, the wrist card, the lever cards, the hands, the laser (or menu beam),
+		// the menu pointer's dot, the vignette, the blink, then the background. A game screen is never dropped while the
+		// budget holds the screens. The order on screen is kept.
+		constexpr u8 kRankToast = 0;
+		constexpr u8 kRankWrist = 1;
+		constexpr u8 kRankLever = 2;
+		constexpr u8 kRankHand = 3;
+		constexpr u8 kRankLaser = 4;
+		constexpr u8 kRankPointerDot = 5;
+		constexpr u8 kRankVignette = 6;
+		constexpr u8 kRankBlink = 7;
+		constexpr u8 kRankBackground = 8;
+		constexpr u8 kRankScreen = 9;
+		constexpr u32 kRankCount = 10;
+		const char* const kRankNames[kRankCount] = {"toast", "wrist card", "lever card", "hand", "laser", "menu dot",
+			"vignette", "blink", "background", "screen"};
+		u8 HudCardRank(int card)
+		{
+			switch (card)
+			{
+				case HudCards::kLaser: return kRankLaser;
+				case HudCards::kWrist: return kRankWrist;
+				case HudCards::kVignette: return kRankVignette;
+				case HudCards::kToast: return kRankToast;
+				case HudCards::kBlink: return kRankBlink;
+				default: return kRankPointerDot;
+			}
+		}
+		// Layers one frame may submit, background included: min(maxLayerCount, kLayerCapacity + 1), set in Initialize.
+		std::atomic<u32> s_layer_budget{kLayerCapacity + 1};
+		// Frames that dropped a layer since the last Layer budget line, and the ranks they dropped (a bit per rank).
+		std::atomic<u32> s_budget_frames{0};
+		std::atomic<u32> s_budget_ranks{0};
+		std::atomic<u64> s_budget_frames_total{0};
+		std::atomic<u64> s_budget_logged_ms{0};
+		// The flat-quad fallback for a curved screen, logged once per session.
+		bool s_flat_fallback_logged = false;
+
 		// A layer that moves with a controller (a hand impostor, the laser, the wrist card): the controller pose it was placed
 		// for. With [VR] HandsDisplayRate the pacer moves it rigidly with that hand to the pose located for each display frame.
 		struct HandAttach
@@ -204,6 +244,7 @@ namespace VR::XRCompositor
 				u8 kind;
 				u8 role;
 				u8 pointer; // kPointerPart*: the menu pointer's beam or dot, placed again by the pacer
+				u8 rank; // ARMSX2 (Steam Frame M3): kRank*, which layer goes first when the runtime takes fewer
 				XrCompositionLayerQuad quad;
 				XrCompositionLayerCylinderKHR cyl;
 				HandAttach att; // not attached unless the layer rides on a controller
@@ -4146,6 +4187,7 @@ namespace VR::XRCompositor
 				PublishedSet::Entry& e = out->e[out->count];
 				e.att = HandAttach{};
 				e.pointer = kPointerPartNone;
+				e.rank = kRankScreen; // ARMSX2 (Steam Frame M3): set below for every other role
 				bool known = false;
 				for (u32 k = 0; k < src.screen_slots && !known; k++)
 				{
@@ -4170,6 +4212,7 @@ namespace VR::XRCompositor
 					{
 						e.kind = kKindQuad;
 						e.role = kRoleLever;
+						e.rank = kRankLever;
 						e.quad = src.lever_quads[k];
 						known = true;
 					}
@@ -4180,6 +4223,7 @@ namespace VR::XRCompositor
 					{
 						e.kind = kKindQuad;
 						e.role = kRoleHand;
+						e.rank = kRankHand;
 						e.quad = src.hand_quads[k];
 						if (src.hand_att)
 							e.att = src.hand_att[k];
@@ -4192,6 +4236,7 @@ namespace VR::XRCompositor
 					{
 						e.kind = kKindQuad;
 						e.role = (k == HudCards::kLaser) ? kRoleHudLaser : (k == HudCards::kWrist) ? kRoleHudWrist : kRoleHudView;
+						e.rank = HudCardRank(k);
 						e.quad = src.hud_quads[k];
 						if (src.hud_att)
 							e.att = src.hud_att[k];
@@ -4441,18 +4486,100 @@ namespace VR::XRCompositor
 			pose.position.z = head.z - sa * dx + ca * dz;
 		}
 
+		// ARMSX2 (Steam Frame M3): keeps a frame within the runtime's layer budget. keep[] marks the entries that would
+		// go; drops the lowest-ranked kept entry (the topmost of equal rank) until the entries plus the background fit,
+		// the background only once nothing ranked below it is left, and a screen only if the budget is below the screens.
+		// Returns the ranks it dropped, a bit each.
+		u32 FitLayerBudget(const PublishedSet& set, bool* keep, bool* use_background, u32 budget)
+		{
+			u32 count = *use_background ? 1u : 0u;
+			for (u32 i = 0; i < set.count; i++)
+				count += keep[i] ? 1u : 0u;
+			budget = std::max<u32>(budget, 1u);
+			u32 dropped = 0;
+			while (count > budget)
+			{
+				int victim = -1;
+				for (u32 i = 0; i < set.count; i++)
+				{
+					if (keep[i] && set.e[i].rank < kRankBackground &&
+						(victim < 0 || set.e[i].rank <= set.e[static_cast<u32>(victim)].rank))
+						victim = static_cast<int>(i);
+				}
+				if (victim < 0 && *use_background)
+				{
+					*use_background = false;
+					dropped |= 1u << kRankBackground;
+					count--;
+					continue;
+				}
+				if (victim < 0)
+				{
+					for (u32 i = set.count; i-- > 0;)
+					{
+						if (keep[i])
+						{
+							victim = static_cast<int>(i);
+							break;
+						}
+					}
+				}
+				if (victim < 0)
+					break;
+				keep[victim] = false;
+				dropped |= 1u << std::min<u32>(set.e[static_cast<u32>(victim)].rank, kRankCount - 1);
+				count--;
+			}
+			return dropped;
+		}
+
+		// ARMSX2 (Steam Frame M3): the Layer budget line, at the first drop and then at most every 10 s while frames drop.
+		void NoteLayerBudgetDrop(u32 ranks)
+		{
+			s_budget_frames.fetch_add(1, std::memory_order_relaxed);
+			s_budget_ranks.fetch_or(ranks, std::memory_order_relaxed);
+			const u64 total = s_budget_frames_total.fetch_add(1, std::memory_order_relaxed) + 1;
+			const u64 now = CameraDriver::SteadyNowMs();
+			const u64 last = s_budget_logged_ms.load(std::memory_order_relaxed);
+			if (total != 1 && now < last + 10000)
+				return;
+			s_budget_logged_ms.store(now, std::memory_order_relaxed);
+			const u32 frames = s_budget_frames.exchange(0, std::memory_order_relaxed);
+			const u32 mask = s_budget_ranks.exchange(0, std::memory_order_relaxed);
+			std::string names;
+			for (u32 r = 0; r < kRankCount; r++)
+			{
+				if (mask & (1u << r))
+				{
+					if (!names.empty())
+						names += ", ";
+					names += kRankNames[r];
+				}
+			}
+			Console.Warning("(VR) Layer budget: %u frame(s) had more layers than the runtime takes (%u a frame); dropped: %s.",
+				frames, s_layer_budget.load(std::memory_order_relaxed), names.c_str());
+		}
+
 		// The submit array: the background first, then the set's entries (only Screen and Lever while the GS is
 		// idle), Screen entries turned by `turn`. Returns the layer count; the pointers point into `set`.
 		u32 BuildSubmitArray(PublishedSet& set, const XrCompositionLayerProjection* background, bool stale, float turn,
 			const XrCompositionLayerBaseHeader** out)
 		{
+			// ARMSX2 (Steam Frame M3): what goes is decided first, within the runtime's layer budget.
+			bool keep[kLayerCapacity] = {};
+			for (u32 i = 0; i < set.count && i < kLayerCapacity; i++)
+				keep[i] = !(stale && set.e[i].role != kRoleScreen && set.e[i].role != kRoleLever);
+			bool use_background = (background != nullptr);
+			const u32 dropped = FitLayerBudget(set, keep, &use_background, s_layer_budget.load(std::memory_order_relaxed));
+			if (dropped != 0)
+				NoteLayerBudgetDrop(dropped);
 			u32 n = 0;
-			if (background)
+			if (use_background)
 				out[n++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(background);
 			for (u32 i = 0; i < set.count && n < kLayerCapacity + 1; i++)
 			{
 				PublishedSet::Entry& e = set.e[i];
-				if (stale && e.role != kRoleScreen && e.role != kRoleLever)
+				if (!keep[i])
 					continue;
 				if (e.role == kRoleScreen && turn != 0.0f)
 					ApplyTurn(e, set.fp_head, turn);
@@ -5958,6 +6085,33 @@ namespace VR::XRCompositor
 			Console.WriteLn("(VR) Edge fill: off (%s); the background stays black.",
 				!EmuConfig.VR.EdgeFill ? "[VR] EdgeFill = false" : "needs the opaque background");
 
+		// ARMSX2 (Steam Frame M3): the layer budget and the curved-screen fallback, logged at every session start.
+		{
+			const u32 runtime_max = XRSession::MaxLayerCount();
+			const u32 budget = (runtime_max == 0) ? (kLayerCapacity + 1) : std::min<u32>(runtime_max, kLayerCapacity + 1);
+			s_layer_budget.store(budget, std::memory_order_relaxed);
+			s_budget_frames.store(0, std::memory_order_relaxed);
+			s_budget_ranks.store(0, std::memory_order_relaxed);
+			s_budget_frames_total.store(0, std::memory_order_relaxed);
+			s_budget_logged_ms.store(0, std::memory_order_relaxed);
+			s_flat_fallback_logged = false;
+			if (runtime_max == 0)
+				Console.Warning("(VR) Layer budget: the runtime's maxLayerCount is unknown; submitting up to %u layers a frame.",
+					budget);
+			else if (runtime_max >= kLayerCapacity + 1)
+				Console.WriteLn("(VR) Layer budget: the runtime takes %u layers a frame; the compositor builds at most %u (the "
+								"background and %u more), so nothing is dropped.",
+					runtime_max, kLayerCapacity + 1, kLayerCapacity);
+			else
+				Console.Warning("(VR) Layer budget: the runtime takes only %u layers a frame (the compositor builds up to %u). "
+								"When a frame has more, the least important go first: the toast, the wrist card, the lever cards, "
+								"the hands, the laser, the menu dot, the vignette, the blink, then the background.",
+					runtime_max, kLayerCapacity + 1);
+			Console.WriteLn("(VR) Screens: %s", XRSession::HasCylinderLayer() ?
+				"cylinder layers available; a screen with an arc of 5 degrees or more is curved." :
+				"no cylinder layers (XR_KHR_composition_layer_cylinder); every screen is a flat quad.");
+		}
+
 		s.initialized = true;
 		s.pacer = std::thread(PacerThreadMain, s.pacer_gen.load(std::memory_order_acquire));
 
@@ -6385,6 +6539,14 @@ namespace VR::XRCompositor
 			const float voffset = (fp_screen || tablet) ? 0.0f : sp.voffset;
 			const float aspect = ComputeAspect();
 			const bool curved = (arc_deg >= 5.0f) && XRSession::HasCylinderLayer();
+			// ARMSX2 (Steam Frame M3): the flat-quad fallback, once per session.
+			if (arc_deg >= 5.0f && !curved && !s_flat_fallback_logged)
+			{
+				s_flat_fallback_logged = true;
+				Console.WriteLn("(VR) Screen: a %.0f degree curve is asked for, but the runtime has no cylinder layers; it is "
+								"shown as a flat quad.",
+					arc_deg);
+			}
 			if (fp_screen && !curved && distance > 0.0f)
 			{
 				fill_geo = true;
