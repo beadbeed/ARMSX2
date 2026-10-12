@@ -305,7 +305,8 @@ While a game runs, PINE listens on a Unix socket, `$XDG_RUNTIME_DIR/pcsx2.sock` 
 the emulog's `PINE: Listening on ...` line names it). `FRAME_PINE=0` turns PINE off again. Two ways to use it:
 
 - On the Frame, over SSH: `python3 tools/pine.py` in the extracted folder prints the game's status and id and reads the
-  EE RAM, as a check. Other tools from `tools/outbreak-vr` import `pine.py` and find the socket the same way.
+  EE RAM, as a check. Other tools copied next to it from PenguinScreen2's `tools/outbreak-vr` import `pine.py` and find
+  the socket the same way.
 - From the PC: forward a local port to the Frame's socket, then run the tools on the PC as with the PC build (TCP
   127.0.0.1:28011 is the default on Windows):
 
