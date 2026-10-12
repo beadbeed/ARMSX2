@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Steam Frame: starts Outbreak VR (ARMSX2 with --vr) and logs everything. Milestone M0: the game on a
-# flat screen in front of you, the Frame controllers as the pad. No first-person camera or stereo yet.
+# Steam Frame: starts Outbreak VR (ARMSX2 with --vr) and logs everything. Milestone M1: the game in first
+# person, the head turning the game camera, both eyes rendered (stereo depth), the Frame controllers as the
+# pad. FRAME_VIEW=flat gives M0's fixed flat screen instead.
 #
 # It sits at the top of the extracted outbreak-vr-frame-<sha> folder (the AppDir). Run it from there over
 # SSH, or make it the devkit title's Start Command. Logs go to ~/armsx2-vr/logs/launch-<time>.log: this
@@ -14,10 +15,13 @@
 #   FRAME_NO_FDM=1     disable Valve's FDM injection layer (it can hang vkCreateDevice, SteamVR-for-Linux #972)
 #   FRAME_NO_GSWSI=1   disable the gamescope WSI layer
 #   FRAME_VR_LOG_DIR=D log somewhere other than ~/armsx2-vr/logs
+#   FRAME_VIEW=first-person   set [VR] HeadCamera and StereoMode to true in the ini (the M1 view), then start
+#   FRAME_VIEW=flat           set them to false (M0's flat screen), then start
 #
 # First run: if ~/.config/ARMSX2/inis/PCSX2.ini does not exist, this writes a small one for the headset:
-# no setup wizard, Vulkan at 1x, MTVU on, VR on with the first-person camera and stereo off (M0). Later
-# runs leave the ini alone, so change it freely (or delete it to get this one back).
+# no setup wizard, Vulkan at 1x, MTVU on, VR on with the first-person camera and stereo on (M1). Later
+# runs leave the ini alone, so change it freely (or delete it to get this one back). FRAME_VIEW changes
+# only those two keys and keeps everything else.
 
 set -u
 
@@ -108,12 +112,40 @@ vuThread = true
 
 [VR]
 Enable = true
-HeadCamera = false
-StereoMode = false
+HeadCamera = true
+StereoMode = true
 HeadsetRateSubmit = true
 EOF
 else
 	log "Settings: $INI (left as it is)"
+fi
+
+# FRAME_VIEW: the first-person view (head camera and stereo) or M0's flat screen, written into [VR].
+set_vr_view() {
+	local value=$1 tmp="$INI.view.$$"
+	awk -v v="$value" '
+		function add_missing() { if (in_vr) { if (!hc) print "HeadCamera = " v; if (!sm) print "StereoMode = " v } }
+		/^\[/ { add_missing(); in_vr = ($0 == "[VR]"); if (in_vr) seen = 1; hc = 0; sm = 0; print; next }
+		in_vr && /^HeadCamera[ \t]*=/ { print "HeadCamera = " v; hc = 1; next }
+		in_vr && /^StereoMode[ \t]*=/ { print "StereoMode = " v; sm = 1; next }
+		{ print }
+		END { add_missing(); if (!seen) { print ""; print "[VR]"; print "HeadCamera = " v; print "StereoMode = " v } }
+	' "$INI" >"$tmp" && mv "$tmp" "$INI"
+}
+case "${FRAME_VIEW:-}" in
+	"") ;;
+	first-person | firstperson | fp)
+		set_vr_view true && log "FRAME_VIEW=$FRAME_VIEW: [VR] HeadCamera = true, StereoMode = true in $INI" ;;
+	flat | m0)
+		set_vr_view false && log "FRAME_VIEW=$FRAME_VIEW: [VR] HeadCamera = false, StereoMode = false in $INI" ;;
+	*)
+		log "FRAME_VIEW=$FRAME_VIEW is not 'first-person' or 'flat'; the ini is left as it is" ;;
+esac
+if [ -r "$INI" ]; then
+	log "[VR] view in the ini: $(grep -E '^(HeadCamera|StereoMode)[ \t]*=' "$INI" | tr '\n' ' ')"
+	if [ -z "${FRAME_VIEW:-}" ] && grep -qE '^HeadCamera[ \t]*=[ \t]*false' "$INI"; then
+		log "This ini has M0's flat screen (HeadCamera = false). For first person, run once with FRAME_VIEW=first-person (or delete the ini)."
+	fi
 fi
 
 # The game: $1, or the first line of ~/armsx2-vr/game.txt.

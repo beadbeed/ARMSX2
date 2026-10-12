@@ -11,10 +11,11 @@
 #      linked in: QT_QPA_PLATFORM=offscreen AppRun -vr-info prints the version line
 #      and "No OpenXR runtime is available". The VR profiles are in the AppDir.
 #   4. launch-outbreak-vr.sh with no game: writes the first-run ini (the settings
-#      version ARMSX2 expects, VR on, head camera and stereo off), says no game was
+#      version ARMSX2 expects, VR on, head camera and stereo on: M1), says no game was
 #      given and exits 2; a second run leaves the ini alone. ARMSX2 -testconfig then
 #      loads that ini without resetting it, and makes the BIOS and VR profile folders
-#      under ~/.config/ARMSX2.
+#      under ~/.config/ARMSX2. FRAME_VIEW=flat and FRAME_VIEW=first-person switch
+#      [VR] HeadCamera and StereoMode and keep the rest of the ini.
 #   5. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
 #      GLIBC_ symbol version above 2.39.
 #   6. bash -n passes on the scripts.
@@ -197,7 +198,7 @@ fi
 ini="$home/.config/ARMSX2/inis/PCSX2.ini"
 if [ -f "$ini" ]; then
 	for want in 'SettingsVersion = 1' 'SetupWizardIncomplete = false' 'Renderer = 14' 'upscale_multiplier = 1' \
-		'vuThread = true' 'Enable = true' 'HeadCamera = false' 'StereoMode = false'; do
+		'vuThread = true' 'Enable = true' 'HeadCamera = true' 'StereoMode = true'; do
 		grep -qx "$want" "$ini" || note "first-run ini lacks '$want'"
 	done
 	# The ini's SettingsVersion must be ARMSX2's, or ARMSX2 writes its defaults over the file.
@@ -219,9 +220,25 @@ if [ -f "$ini" ]; then
 	set -e
 	cat "$work/testconfig.txt"
 	[ "$code" -eq 0 ] || note "-testconfig with the first-run ini: exit code $code, expected 0"
-	for want in 'SetupWizardIncomplete = false' 'HeadCamera = false' 'StereoMode = false'; do
+	for want in 'SetupWizardIncomplete = false' 'HeadCamera = true' 'StereoMode = true'; do
 		grep -qx "$want" "$ini" || note "after -testconfig the ini lacks '$want' (ARMSX2 replaced it with its defaults?)"
 	done
+
+	echo "== launch-outbreak-vr.sh FRAME_VIEW=flat, then FRAME_VIEW=first-person"
+	echo "# frame-smoke: view kept?" >>"$ini"
+	for view in flat first-person; do
+		set +e
+		"${NO_RUNTIME_ENV[@]}" HOME="$home" FRAME_VIEW=$view "$appdir/launch-outbreak-vr.sh" >"$work/view-$view.txt" 2>&1
+		set -e
+		value=true
+		[ "$view" = flat ] && value=false
+		for want in "HeadCamera = $value" "StereoMode = $value" 'Enable = true' 'SettingsVersion = 1'; do
+			grep -qx "$want" "$ini" || note "FRAME_VIEW=$view: the ini lacks '$want'"
+		done
+		[ "$(grep -c '^HeadCamera' "$ini")" -eq 1 ] || note "FRAME_VIEW=$view: HeadCamera is in the ini more than once"
+		grep -q 'frame-smoke: view kept' "$ini" || note "FRAME_VIEW=$view dropped other lines of the ini"
+	done
+	grep -h 'FRAME_VIEW=' "$home"/armsx2-vr/logs/launch-*.log || note "FRAME_VIEW: nothing about it in the launch logs"
 	[ -d "$home/.config/ARMSX2/bios" ] || note "-testconfig made no BIOS folder at ~/.config/ARMSX2/bios"
 	[ -d "$home/.config/ARMSX2/vrprofiles" ] || note "-testconfig made no VR profiles folder at ~/.config/ARMSX2/vrprofiles"
 else
