@@ -11448,9 +11448,16 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		}
 	}
 #ifdef ENABLE_VR
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame): the OpenXR VR layer's stereo state decides (PenguinScreen2's check).
+	if (rt && rt->m_texture && rt->m_texture->GetArrayLayers() == 1 &&
+		g_gs_device->SupportsStereoTargets() && VR::StereoState::Get().enabled && !VR::StereoSettings::InterleaveEyes() &&
+		g_texture_cache->IsDisplayChainBP(rt->m_TEX0.TBP0))
+#else
 	if (rt && rt->m_texture && rt->m_texture->GetArrayLayers() == 1 &&
 		g_gs_device->SupportsStereoTargets() && VR::StereoSettings::PerEyeTargets() &&
 		g_texture_cache->IsDisplayChainBP(rt->m_TEX0.TBP0))
+#endif
 	{
 		rt->PromoteToStereo();
 	}

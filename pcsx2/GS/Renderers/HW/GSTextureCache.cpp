@@ -4262,7 +4262,13 @@ GSTextureCache::Target* GSTextureCache::LookupDisplayTarget(GIFRegTEX0 TEX0, con
 
 	{
 #ifdef ENABLE_VR
+#ifdef ENABLE_OPENXR
+		// Outbreak VR (Steam Frame): the OpenXR VR layer's stereo state decides (PenguinScreen2's check);
+		// InterleaveEyes is a debug option that keeps ordinary targets.
+		if (VR::StereoState::Get().enabled && !VR::StereoSettings::InterleaveEyes() && g_gs_device->SupportsStereoTargets())
+#else
 		if (VR::StereoSettings::PerEyeTargets() && g_gs_device->SupportsStereoTargets())
+#endif
 		{
 			NoteDisplayChainBP(dst->m_TEX0.TBP0);
 			dst->PromoteToStereo();
@@ -7808,8 +7814,14 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 	GSTexture::Format format = type == RenderTarget ? GSTexture::Format::Color : GSTexture::Format::DepthStencil;
 	u32 layers = 1;
 #ifdef ENABLE_VR
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame): the OpenXR VR layer's stereo state decides (PenguinScreen2's check).
+	if (type == RenderTarget && g_gs_device->SupportsStereoTargets() &&
+		VR::StereoState::Get().enabled && !VR::StereoSettings::InterleaveEyes() && g_texture_cache->IsDisplayChainBP(TEX0.TBP0))
+#else
 	if (type == RenderTarget && g_gs_device->SupportsStereoTargets() &&
 		VR::StereoSettings::PerEyeTargets() && g_texture_cache->IsDisplayChainBP(TEX0.TBP0))
+#endif
 	{
 		layers = 2;
 	}

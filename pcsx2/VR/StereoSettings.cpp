@@ -34,6 +34,25 @@ namespace VR::StereoSettings
 
 	void Apply(const SettingsInterface& si)
 	{
+#ifdef ENABLE_OPENXR
+		// Outbreak VR (Steam Frame): the OpenXR VR layer owns VR::StereoState (VR::UpdateSettings and
+		// VR::ApplySceneStereo publish it from [VR] Enable/StereoMode and the game's profile), so this
+		// file publishes nothing. DebugView and InterleaveEyes stay as debug options; the stereo keys
+		// below (StereoEnable, Separation, Convergence, ...) are not read.
+		s_debug_view.store(ParseDebugView(si.GetStringValue("VR", "DebugView", "Off")), std::memory_order_relaxed);
+		const bool interleave = si.GetBoolValue("VR", "InterleaveEyes", false);
+		const bool stereo_keys = si.GetBoolValue("VR", "StereoEnable", false);
+		s_per_eye.store(false, std::memory_order_relaxed);
+		static bool s_logged = false;
+		if (interleave != s_interleave.exchange(interleave) || !s_logged)
+		{
+			s_logged = true;
+			Console.WriteLn("(VR) StereoSettings: the OpenXR VR layer owns the stereo state; debug view %s, interleaved eyes %s%s.",
+				si.GetStringValue("VR", "DebugView", "Off").c_str(), interleave ? "on" : "off",
+				stereo_keys ? " ([VR] StereoEnable is ignored here: use [VR] StereoMode)" : "");
+		}
+		return;
+#endif
 		StereoState::Params p;
 		p.enabled = si.GetBoolValue("VR", "StereoEnable", false);
 		p.separation = si.GetFloatValue("VR", "Separation", 0.01f);

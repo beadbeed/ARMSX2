@@ -37,10 +37,13 @@ namespace VR::StereoSettings
 	// True when stereo renders into ordinary single-layer targets, one eye per
 	// frame. This is the first-milestone testbed (and works on any Vulkan
 	// device); per-eye layered targets replace it in the next milestone.
+	// With ENABLE_OPENXR (Steam Frame) it is a debug option only: [VR] InterleaveEyes as it is, and
+	// it takes effect only while the VR layer has stereo on.
 	bool InterleaveEyes();
 
 	// True when stereo renders both eyes every frame into per-eye (two-layer) targets: the
 	// texture cache gives the display chain a layer per eye and draws into it use multiview.
+	// With ENABLE_OPENXR always false: the GS checks VR::StereoState::Get().enabled instead.
 	bool PerEyeTargets();
 
 	// How a flat window (or a frame dump) shows a per-eye frame.
