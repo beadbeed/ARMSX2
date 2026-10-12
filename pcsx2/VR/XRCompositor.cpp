@@ -299,6 +299,10 @@ namespace VR::XRCompositor
 
 			// GS-side counts for the 5 s Frames line, taken by whichever thread logs it.
 			std::atomic<u32> stat_gs_frames{0};
+			// ARMSX2 (Steam Frame M1), for the Pose-to-photon line: GS presents that placed the first-person screen at
+			// the frame's matched render pose (CameraDriver::RenderPose), and at the lag fallback (FirstPersonPoseAt).
+			std::atomic<u32> stat_fp_render_pose{0};
+			std::atomic<u32> stat_fp_lag_pose{0};
 			std::atomic<u32> stat_copy_skipped{0};
 			std::atomic<u32> stat_copy_timeout{0};
 			// Hand images drawn and uploaded (new), and hands shown again from their last image (kept), for the Hands line.
@@ -4494,6 +4498,21 @@ namespace VR::XRCompositor
 			float hand_moved_max_deg = 0.0f;
 			float hand_drift_max_deg = 0.0f;
 			u32 hand_drift_over = 0;
+			// ARMSX2 (Steam Frame M1), the Pose-to-photon line (NotePoseToPhoton): first-person images submitted
+			// (counted at their first showing) and display frames that showed one; how far each display time is past
+			// the moment the image's head pose was taken, moved onto the display clock by the pacer's lead ("behind",
+			// at the first showing and over all showings); and, when the runtime's clock is the steady clock, the
+			// whole age from the pose sample to its photons at the first showing.
+			u32 p2p_images = 0;
+			u32 p2p_shows = 0;
+			double p2p_first_sum_ms = 0.0;
+			float p2p_first_max_ms = 0.0f;
+			double p2p_all_sum_ms = 0.0;
+			float p2p_all_max_ms = 0.0f;
+			double p2p_total_sum_ms = 0.0;
+			float p2p_total_max_ms = 0.0f;
+			u32 p2p_total_n = 0;
+			u64 p2p_last_image = 0;
 		};
 
 		void NoteWaitToBegin(FrameStats& st, s64 wait_ns, s64 begin_ns)
@@ -4504,6 +4523,48 @@ namespace VR::XRCompositor
 			st.wait_begin_sum_ms += ms;
 			st.wait_begin_n++;
 			st.wait_begin_max_ms = std::max(st.wait_begin_max_ms, ms);
+		}
+
+		// ARMSX2 (Steam Frame M1): pose-to-photon age of the first-person screen, for one submitted display frame.
+		// set.fp_image is ImageKey(the head pose the image was placed at), so its top 48 bits are that pose's
+		// HeadPose publish time (steady ms). The pacer locates the head right after xrWaitFrame for that frame's
+		// predicted display time, so the pose's moment plus the pacer's lead (display_clock_offset_ns) is about the
+		// display time the pose was predicted for: "behind" is how much later the image is shown than that. When the
+		// runtime's XrTime runs on the steady clock (CLOCK_MONOTONIC on Linux; then the offset is the lead itself,
+		// 0-250 ms), display_time - pose time is the whole age from the head sample to the photons.
+		void NotePoseToPhoton(FrameStats& st, const PublishedSet& set, XrTime display_time)
+		{
+			if (!set.fp_screen || set.fp_image <= 1 || display_time <= 0 ||
+				s.latest_display_time.load(std::memory_order_acquire) == 0)
+				return;
+			const u64 pose_ms = set.fp_image >> 16;
+			if (pose_ms == 0)
+				return;
+			const s64 offset_ns = s.display_clock_offset_ns.load(std::memory_order_acquire);
+			const double pose_ns = static_cast<double>(pose_ms) * 1.0e6;
+			const float behind_ms =
+				static_cast<float>((static_cast<double>(display_time) - (pose_ns + static_cast<double>(offset_ns))) / 1.0e6);
+			if (!std::isfinite(behind_ms) || behind_ms < -1000.0f || behind_ms > 10000.0f)
+				return;
+			st.p2p_shows++;
+			st.p2p_all_sum_ms += behind_ms;
+			st.p2p_all_max_ms = std::max(st.p2p_all_max_ms, behind_ms);
+			if (set.fp_image == st.p2p_last_image)
+				return;
+			st.p2p_last_image = set.fp_image;
+			st.p2p_images++;
+			st.p2p_first_sum_ms += behind_ms;
+			st.p2p_first_max_ms = std::max(st.p2p_first_max_ms, behind_ms);
+			if (offset_ns >= 0 && offset_ns <= 250000000)
+			{
+				const float total_ms = static_cast<float>((static_cast<double>(display_time) - pose_ns) / 1.0e6);
+				if (std::isfinite(total_ms) && total_ms >= 0.0f && total_ms < 10000.0f)
+				{
+					st.p2p_total_sum_ms += total_ms;
+					st.p2p_total_max_ms = std::max(st.p2p_total_max_ms, total_ms);
+					st.p2p_total_n++;
+				}
+			}
 		}
 
 		void MaybeLogFrameStats(FrameStats& st)
@@ -4547,6 +4608,28 @@ namespace VR::XRCompositor
 					static_cast<double>(st.hand_moved_max_deg), static_cast<double>(st.hand_drift_max_deg), st.hand_drift_over,
 					static_cast<double>(kHandDriftWarnDeg), hand_new / secs, hand_kept / secs,
 					s.hands_display_rate ? "display rate (VR pacer)" : "GS present (HandsDisplayRate off)");
+			}
+			// ARMSX2 (Steam Frame M1): the Pose-to-photon line, while the first-person screen is up.
+			const u32 fp_render_pose = s.stat_fp_render_pose.exchange(0, std::memory_order_relaxed);
+			const u32 fp_lag_pose = s.stat_fp_lag_pose.exchange(0, std::memory_order_relaxed);
+			if (st.p2p_shows > 0 || fp_render_pose > 0 || fp_lag_pose > 0)
+			{
+				const double frame_ms = (period > 0) ? static_cast<double>(period) / 1.0e6 : 0.0;
+				const double first_mean = (st.p2p_images > 0) ? (st.p2p_first_sum_ms / st.p2p_images) : 0.0;
+				char total[96];
+				if (st.p2p_total_n > 0)
+					std::snprintf(total, sizeof(total), "mean %.1f max %.1f ms", st.p2p_total_sum_ms / st.p2p_total_n,
+						static_cast<double>(st.p2p_total_max_ms));
+				else
+					std::snprintf(total, sizeof(total), "unknown (the runtime's clock is not the steady clock)");
+				Console.WriteLn("(VR) Pose-to-photon: %u first-person images on %u display frames (%.2f each); head pose behind its "
+								"display time at the first showing mean %.1f max %.1f ms (%.2f display frames), over all showings mean "
+								"%.1f max %.1f ms; sample to photons %s; GS presents placed by the render pose %u, by the lag "
+								"fallback %u",
+					st.p2p_images, st.p2p_shows, (st.p2p_images > 0) ? static_cast<double>(st.p2p_shows) / st.p2p_images : 0.0,
+					first_mean, static_cast<double>(st.p2p_first_max_ms), (frame_ms > 0.0) ? first_mean / frame_ms : 0.0,
+					(st.p2p_shows > 0) ? (st.p2p_all_sum_ms / st.p2p_shows) : 0.0, static_cast<double>(st.p2p_all_max_ms),
+					total, fp_render_pose, fp_lag_pose);
 			}
 			const u64 last_serial = st.last_serial;
 			st = FrameStats();
@@ -5524,6 +5607,9 @@ namespace VR::XRCompositor
 					NoteScreenYaw(set, fs.predictedDisplayTime);
 					NoteHandPlacement(hand_frame, fs.predictedDisplayTime);
 					AddHandFrame(stats, hand_frame);
+					// ARMSX2 (Steam Frame M1)
+					if (!stale)
+						NotePoseToPhoton(stats, set, fs.predictedDisplayTime);
 				}
 				NoteMenuPointerNow(pointer_now);
 				MaybeLogFrameStats(stats);
@@ -6265,13 +6351,16 @@ namespace VR::XRCompositor
 				float turn_yaw = 0.0f;
 				const u64 lag = static_cast<u64>(sp.fp_pose_lag_ms);
 				bool placed = false;
-				if (CameraDriver::RenderPose(&stamped, &turn_yaw) ||
+				// ARMSX2 (Steam Frame M1): which pose placed it, for the Pose-to-photon line.
+				const bool by_render_pose = CameraDriver::RenderPose(&stamped, &turn_yaw);
+				if (by_render_pose ||
 					CameraDriver::FirstPersonPoseAt(CameraDriver::SteadyNowMs() - lag, &stamped))
 				{
 					q = {stamped.orientation_x, stamped.orientation_y, stamped.orientation_z, stamped.orientation_w};
 					if (stamped.position_valid)
 						fp_head = {stamped.position_x, stamped.position_y, stamped.position_z};
 					placed = true;
+					(by_render_pose ? s.stat_fp_render_pose : s.stat_fp_lag_pose).fetch_add(1, std::memory_order_relaxed);
 				}
 				pub_fp_head = fp_head;
 				pub_fp_image = placed ? ImageKey(stamped) : 0;
@@ -6664,7 +6753,11 @@ namespace VR::XRCompositor
 		s_legacy_stats.end_n++;
 		s_legacy_stats.layers = submit_count;
 		if (XR_SUCCEEDED(eres))
+		{
 			NoteScreenYaw(set, fs.predictedDisplayTime);
+			// ARMSX2 (Steam Frame M1)
+			NotePoseToPhoton(s_legacy_stats, set, fs.predictedDisplayTime);
+		}
 		MaybeLogFrameStats(s_legacy_stats);
 	}
 
