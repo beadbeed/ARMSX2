@@ -24,7 +24,8 @@
 //
 // Exit codes: 0 when the probe ran to its end, including stopping early because something is not there
 // (no runtime, no headset system, no Vulkan binding); 1 when a call that should have worked failed or the
-// session never ran its phases; 2 for bad arguments.
+// session never ran its phases; 2 for bad arguments; 3 when one call blocked for 2 minutes and the watchdog
+// ended the probe; 128 + the signal number when a stop request could not be answered within 20 s.
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -154,48 +155,113 @@ namespace
 	std::atomic<const char*> s_step{nullptr};
 	std::atomic<int64_t> s_step_since{0};
 	std::atomic_bool s_watchdog_quit{false};
+	// The number of the first SIGINT/SIGTERM/SIGHUP, 0 until one arrives.
 	volatile sig_atomic_t s_quit_signal = 0;
 
+	// One call blocked this long is taken as hung for good: the probe gives up and exits, so a devkit title
+	// nobody can reach with Ctrl+C still ends. Far beyond any call that works (xrCreateInstance takes about
+	// 2 s on the Frame).
+	constexpr int64_t kGiveUpMs = 120000;
+	// After Ctrl+C or Steam's stop, the probe gets this long to end the session cleanly (its own exit path
+	// waits at most 10 s for the runtime) before the watchdog ends the process.
+	constexpr int64_t kQuitGraceMs = 20000;
+	// Exit code when the watchdog ends the process (a hung call); a signal the probe could not answer in
+	// time exits with 128 + the signal number, as the shell would report it.
+	constexpr int kExitHung = 3;
+
+	// Nests: an inner step (xrEndSession while events are polled, say) hands the watchdog back the outer
+	// step and its start time when it ends, instead of leaving the outer call unwatched.
 	class ScopedStep
 	{
 	public:
 		explicit ScopedStep(const char* what)
+			: m_prev(s_step.load())
+			, m_prev_since(s_step_since.load())
 		{
 			s_step_since.store(NowMs());
 			s_step.store(what);
 		}
-		~ScopedStep() { s_step.store(nullptr); }
+		~ScopedStep()
+		{
+			s_step_since.store(m_prev_since);
+			s_step.store(m_prev);
+		}
 		ScopedStep(const ScopedStep&) = delete;
 		ScopedStep& operator=(const ScopedStep&) = delete;
-	};
 
-	// Says "still waiting" every 10 s while one call blocks, so a hang (for example the FDM injection layer
-	// stalling vkCreateDevice, SteamVR-for-Linux #972) reads differently in the log from a crash.
-	void WatchdogMain()
-	{
-		int64_t reported_since = -1;
-		int64_t reported_bucket = 0;
-		while (!s_watchdog_quit.load())
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(250));
-			const char* const step = s_step.load();
-			if (!step)
-				continue;
-			const int64_t since = s_step_since.load();
-			const int64_t bucket = (NowMs() - since) / 10000;
-			if (bucket < 1 || (since == reported_since && bucket == reported_bucket))
-				continue;
-			reported_since = since;
-			reported_bucket = bucket;
-			Log("STILL WAITING: %s has not returned after %lld s", step, static_cast<long long>(bucket * 10));
-		}
-	}
+	private:
+		const char* m_prev;
+		int64_t m_prev_since;
+	};
 
 	void AppendRaw(char* buf, size_t cap, size_t& len, const char* s)
 	{
 		while (*s && len + 1 < cap)
 			buf[len++] = *s++;
 		buf[len] = '\0';
+	}
+
+	// The last line before _exit, written with write() and without the log mutex: the main thread may be
+	// stuck inside LogLine (stderr blocked), and the log FILE is flushed after every line anyway.
+	void LogLineRaw(const char* line)
+	{
+		char buf[512];
+		const int64_t ms = NowMs();
+		const int n = std::snprintf(buf, sizeof(buf), "[%5lld.%03lld] %s\n", static_cast<long long>(ms / 1000),
+			static_cast<long long>(ms % 1000), line);
+		const size_t len = n < 0 ? 0 : std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+		if (s_log_fd >= 0)
+			(void)!write(s_log_fd, buf, len);
+		(void)!write(STDERR_FILENO, buf, len);
+	}
+
+	// Says "still waiting" every 10 s while one call blocks, so a hang (for example the FDM injection layer
+	// stalling vkCreateDevice, SteamVR-for-Linux #972) reads differently in the log from a crash. It also
+	// makes sure the probe never runs forever: a call blocked for kGiveUpMs, or a quit signal the main
+	// thread has not acted on within kQuitGraceMs (it cannot while it sits inside the runtime or the
+	// driver), ends the process without cleanup. SteamVR ends a client's session when the process goes.
+	void WatchdogMain()
+	{
+		int64_t reported_since = -1;
+		int64_t reported_bucket = 0;
+		int64_t quit_seen_ms = -1;
+		while (!s_watchdog_quit.load())
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+			const int64_t now = NowMs();
+
+			const int quit = s_quit_signal;
+			if (quit && quit_seen_ms < 0)
+				quit_seen_ms = now;
+			if (quit && now - quit_seen_ms >= kQuitGraceMs)
+			{
+				const char* const step = s_step.load();
+				char line[384];
+				std::snprintf(line, sizeof(line), "Signal %d: the probe did not finish within %lld s%s%s; exiting now, without cleanup.",
+					quit, static_cast<long long>(kQuitGraceMs / 1000), step ? ", stuck in " : "", step ? step : "");
+				LogLineRaw(line);
+				_exit(128 + quit);
+			}
+
+			const char* const step = s_step.load();
+			if (!step)
+				continue;
+			const int64_t since = s_step_since.load();
+			if (now - since >= kGiveUpMs)
+			{
+				char line[384];
+				std::snprintf(line, sizeof(line), "GIVING UP: %s has not returned after %lld s; exiting with code %d, without cleanup.",
+					step, static_cast<long long>((now - since) / 1000), kExitHung);
+				LogLineRaw(line);
+				_exit(kExitHung);
+			}
+			const int64_t bucket = (now - since) / 10000;
+			if (bucket < 1 || (since == reported_since && bucket == reported_bucket))
+				continue;
+			reported_since = since;
+			reported_bucket = bucket;
+			Log("STILL WAITING: %s has not returned after %lld s", step, static_cast<long long>(bucket * 10));
+		}
 	}
 
 	// Async-signal-safe only (write, no stdio, no allocation): a crash inside the runtime or the driver still
@@ -227,9 +293,10 @@ namespace
 		raise(sig); // SA_RESETHAND restored the default action, so this ends the process as the signal would have.
 	}
 
-	void OnQuitSignal(int)
+	void OnQuitSignal(int sig)
 	{
-		s_quit_signal = 1;
+		if (!s_quit_signal)
+			s_quit_signal = sig;
 	}
 
 	void InstallSignalHandlers()
@@ -241,11 +308,18 @@ namespace
 			sigaction(sig, &fatal, nullptr);
 
 		// Steam's "stop" and Ctrl+C over SSH end the session cleanly instead of killing it mid-frame.
+		// SA_RESETHAND: a second Ctrl+C kills at once, as usual; the watchdog covers a first one the main
+		// thread cannot act on because it is stuck in a call.
 		struct sigaction quit = {};
 		quit.sa_handler = OnQuitSignal;
-		quit.sa_flags = SA_RESTART;
+		quit.sa_flags = SA_RESTART | SA_RESETHAND;
 		for (int sig : {SIGINT, SIGTERM, SIGHUP})
 			sigaction(sig, &quit, nullptr);
+
+		// stderr may be a pipe into tee (frame-probe.sh over SSH), and Ctrl+C or a dropped connection ends
+		// tee first. Writing to that pipe would then raise SIGPIPE and kill the probe in the middle of its
+		// clean exit; ignored, the write just fails and the log file carries on.
+		signal(SIGPIPE, SIG_IGN);
 	}
 
 	// ------------------------------------------------------------------------------------------------
@@ -1443,6 +1517,7 @@ namespace
 		}
 		if (LoadInstanceFunctions())
 		{
+			ScopedStep step("vkEnumeratePhysicalDevices");
 			uint32_t n = 0;
 			vkEnumeratePhysicalDevices(s_vk_instance, &n, nullptr);
 			std::vector<VkPhysicalDevice> devices(n);
@@ -1515,7 +1590,11 @@ namespace
 		XrVulkanGraphicsDeviceGetInfoKHR gi = {XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR};
 		gi.systemId = s_system;
 		gi.vulkanInstance = s_vk_instance;
-		if (!CheckXR(pfn_xrGetVulkanGraphicsDevice2KHR(s_instance, &gi, &s_vk_physical), "xrGetVulkanGraphicsDevice2KHR"))
+		{
+			ScopedStep step("xrGetVulkanGraphicsDevice2KHR");
+			r = pfn_xrGetVulkanGraphicsDevice2KHR(s_instance, &gi, &s_vk_physical);
+		}
+		if (!CheckXR(r, "xrGetVulkanGraphicsDevice2KHR"))
 			return Outcome::Fail;
 
 		const DeviceFacts facts = ReportPhysicalDevice(s_vk_physical, "Vulkan device chosen by the runtime");
@@ -1794,6 +1873,7 @@ namespace
 		ci.faceCount = 1;
 		ci.arraySize = layers;
 		ci.mipCount = 1;
+		ScopedStep step("xrCreateSwapchain");
 		XrResult r = xrCreateSwapchain(s_session, &ci, &sc.handle);
 		if (XR_FAILED(r))
 		{
@@ -2166,6 +2246,7 @@ namespace
 			{
 				XrSessionBeginInfo bi = {XR_TYPE_SESSION_BEGIN_INFO};
 				bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+				ScopedStep step("xrBeginSession");
 				if (CheckXR(xrBeginSession(s_session, &bi), "xrBeginSession"))
 				{
 					Log("Session began.");
@@ -2365,6 +2446,8 @@ namespace
 		bool locate_warned = false;
 		uint64_t end_errors_logged = 0;
 		uint64_t frames = 0;
+		uint64_t frame_call_errors = 0; // xrWaitFrame/xrBeginFrame failures in a row
+		constexpr uint64_t kMaxFrameCallErrors = 100;
 
 		// xrRequestExitSession only works on a running session, so the request is sent from the frame loop.
 		auto request_exit = [&](const char* why) {
@@ -2419,6 +2502,7 @@ namespace
 			if (exit_requested && !exit_sent)
 			{
 				exit_sent = true;
+				ScopedStep step("xrRequestExitSession");
 				if (!CheckXR(xrRequestExitSession(s_session), "xrRequestExitSession"))
 					break;
 			}
@@ -2439,19 +2523,36 @@ namespace
 			const double wait_ms = static_cast<double>(NowUs() - t0) / 1000.0;
 			if (XR_FAILED(r))
 			{
-				Log("xrWaitFrame: %s", XrResultName(r));
+				if (frame_call_errors++ < 5)
+					Log("xrWaitFrame: %s", XrResultName(r));
 				if (r == XR_ERROR_SESSION_LOST || r == XR_ERROR_INSTANCE_LOST)
 					break;
+				// A failure that keeps coming back would otherwise spin here for ever: give up on the session.
+				if (frame_call_errors >= kMaxFrameCallErrors && !failed)
+				{
+					Log("FAIL: xrWaitFrame or xrBeginFrame failed %llu times in a row.", static_cast<unsigned long long>(frame_call_errors));
+					failed = true;
+				}
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				continue;
 			}
 			XrFrameBeginInfo fbi = {XR_TYPE_FRAME_BEGIN_INFO};
-			r = xrBeginFrame(s_session, &fbi);
+			{
+				ScopedStep step("xrBeginFrame");
+				r = xrBeginFrame(s_session, &fbi);
+			}
 			if (XR_FAILED(r))
 			{
-				Log("xrBeginFrame: %s", XrResultName(r));
+				if (frame_call_errors++ < 5)
+					Log("xrBeginFrame: %s", XrResultName(r));
+				if (frame_call_errors >= kMaxFrameCallErrors && !failed)
+				{
+					Log("FAIL: xrWaitFrame or xrBeginFrame failed %llu times in a row.", static_cast<unsigned long long>(frame_call_errors));
+					failed = true;
+				}
 				continue;
 			}
+			frame_call_errors = 0;
 			frames++;
 
 			// Phases are timed from the moment someone can see them, not from session start.
@@ -2533,7 +2634,13 @@ namespace
 					jobs[job_count++] = {&s_sc_quad, {screen, screen}, 0};
 				}
 
-				if (located && RenderJobs(jobs, job_count, stats))
+				bool rendered = false;
+				if (located)
+				{
+					ScopedStep step("acquiring, clearing and releasing swapchain images");
+					rendered = RenderJobs(jobs, job_count, stats);
+				}
+				if (rendered)
 				{
 					stats.rendered++;
 					for (int eye = 0; eye < 2; eye++)
@@ -2589,7 +2696,10 @@ namespace
 			fei.layerCount = layer_count;
 			fei.layers = layer_count ? layers : nullptr;
 			t0 = NowUs();
-			r = xrEndFrame(s_session, &fei);
+			{
+				ScopedStep step("xrEndFrame");
+				r = xrEndFrame(s_session, &fei);
+			}
 			if (active)
 				stats.end_us.Add(static_cast<double>(NowUs() - t0));
 			if (XR_FAILED(r))
@@ -2623,7 +2733,10 @@ namespace
 	void DestroyAll()
 	{
 		if (s_vk_device != VK_NULL_HANDLE && vkDeviceWaitIdle)
+		{
+			ScopedStep step("vkDeviceWaitIdle");
 			vkDeviceWaitIdle(s_vk_device);
+		}
 		if (s_vk_device != VK_NULL_HANDLE)
 		{
 			DestroySwapchain(s_sc_array);

@@ -22,9 +22,11 @@ mkdir -p "$LOG_DIR"
 STAMP=$(date +%Y%m%d-%H%M%S)
 LAUNCH_LOG="$LOG_DIR/launch-$STAMP.log"
 
-# Into the launch log; through tee as well when someone is watching a terminal (SSH).
+# Into the launch log; through tee as well when someone is watching a terminal (SSH). Ctrl+C and a
+# dropped SSH connection reach tee too: it ignores them, so it keeps writing the launch log while the
+# probe ends its session, and stops by itself once the probe and this script have exited.
 if [ -t 1 ]; then
-	exec > >(tee -a "$LAUNCH_LOG") 2>&1
+	exec > >(trap '' INT TERM HUP; exec tee -a "$LAUNCH_LOG") 2>&1
 else
 	exec >>"$LAUNCH_LOG" 2>&1
 fi
