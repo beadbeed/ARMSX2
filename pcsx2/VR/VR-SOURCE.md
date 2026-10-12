@@ -174,7 +174,9 @@ ARMSX2's defaults: Pad1 is a DualShock 2, the `VR` input source is on, and the B
 
 CI ("Outbreak VR (Steam Frame build)", dispatched on `outbreak-vr-frame`): run 38218593123 on 6b8e52b689 failed (a
 clang error in StereoSettings.cpp, a redefined local; fixed in f591c6ffa5); run 38219015927 on da2c952527 (priorities
-1-3 and the launcher) passed: the build, the unit tests and frame-smoke.
+1-3 and the launcher) passed: the build, the unit tests and frame-smoke. Run 38220908329 on 205750a009 (all six
+priorities) passed: the build, the unit tests, frame-smoke (with the FRAME_VIEW checks), the hook audit and the hook
+parity check.
 
 Done (the M1 brief's six priorities):
 
