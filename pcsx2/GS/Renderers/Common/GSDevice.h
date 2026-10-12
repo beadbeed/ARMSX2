@@ -2275,6 +2275,11 @@ public:
 	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad);
 	void FXAA();
 	void ShadeBoost();
+#ifdef ENABLE_OPENXR
+	/// Outbreak VR: ShadeBoost with explicit (brightness, contrast, saturation, gamma) parameters, each 1.0 = neutral,
+	/// for the headset's presentation lift (VR::PresentationLift). Same per-layer pass as ShadeBoost().
+	void ShadeBoost(const GSVector4& params);
+#endif
 	/// Runs the configured RetroArch (.slangp) shader chain over m_current, after
 	/// ShadeBoost/FXAA, rendering at `output_size` — the frame's ON-SCREEN size, so shaders
 	/// that generate detail per output pixel (CRT scanlines above all) run at display pixel

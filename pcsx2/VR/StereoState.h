@@ -57,6 +57,27 @@ namespace VR::StereoState
 		float log_w1 = 0.0f;
 		float log_dfar = 0.0f;
 
+#ifdef ENABLE_OPENXR
+		// Outbreak VR (Steam Frame): PenguinScreen2's first-person fields, for the OpenXR VR layer.
+		// First-person scene armed (linear map only).
+		bool first_person = false;
+		// Linear-map disparity floor, in units of separation: 0 keeps the old clamp at the
+		// convergence plane, -1 lets content reach crossed disparity -separation.
+		float near_floor = 0.0f;
+
+		// First-person auto stereo, for the stereo dump sidecar and the logs only (the draws use separation,
+		// convergence and near_floor above): whether the values came from the headset, the IPD and the
+		// first-person screen they were derived from, the strength, the separation the ease is heading for, how
+		// far the ease has got (0-1) and the NDC-to-display width ratio applied.
+		bool fp_auto = false;
+		float fp_ipd_m = 0.0f;
+		float fp_screen_w_m = 0.0f, fp_screen_h_m = 0.0f, fp_screen_d_m = 0.0f;
+		float fp_strength = 1.0f;
+		float fp_sep_target = 0.0f;
+		float fp_ease = 1.0f;
+		float fp_ndc_ratio = 1.0f;
+#endif
+
 	};
 
 	void Publish(const Params& params);
@@ -68,4 +89,19 @@ namespace VR::StereoState
 	float GetCurrentEyeSign();
 
 	void AdvanceEye();
+
+#ifdef ENABLE_OPENXR
+	// Head roll (radians, game camera convention) published by the camera driver each
+	// time it writes the look-at. HeadRoll returns false if never set or older than 150 ms.
+	void PublishHeadRoll(float roll_rad);
+	bool HeadRoll(float* roll_rad);
+
+	// Rotate first-person parallax with head roll (VR.RollParallax).
+	void SetRollParallaxEnabled(bool enabled);
+	bool RollParallaxEnabled();
+
+	// Offline-only gate for the headset-free stereo dump (false while the network adapter is on).
+	void SetDumpAllowed(bool allowed);
+	bool DumpAllowed();
+#endif
 }

@@ -28,6 +28,9 @@ enum class InputSourceType : u32
 	DInput,
 	XInput,
 #endif
+#ifdef ENABLE_OPENXR
+	VR,
+#endif
 	Count,
 };
 
@@ -315,6 +318,20 @@ namespace InputManager
 
 	/// Called when an input device is disconnected.
 	void OnInputDeviceDisconnected(const InputBindingKey key, const std::string_view identifier);
+
+#ifdef ENABLE_OPENXR
+	/// Outbreak VR: bindings the VR layer adds for a pad port on top of the ini's (the VR Gamepad of the game's
+	/// VR profile). Returns true if the overlay changed; the caller then reloads the bindings.
+	struct VRBindingOverlayEntry
+	{
+		std::string section;
+		std::string key;
+		std::string binding;
+	};
+	bool SetVRBindingOverlay(std::vector<VRBindingOverlayEntry> entries);
+	std::vector<std::string> GetVRBindingOverlay(const std::string_view section, const std::string_view key);
+	bool HasVRBindingOverlay();
+#endif
 } // namespace InputManager
 
 namespace Host

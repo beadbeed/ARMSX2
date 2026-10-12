@@ -1564,6 +1564,21 @@ void GSDevice::ShadeBoost()
 	}
 }
 
+#ifdef ENABLE_OPENXR
+void GSDevice::ShadeBoost(const GSVector4& params)
+{
+	FlushDeferredDraws();
+	const u32 layers = m_current->GetArrayLayers();
+	if (ResizeRenderTarget(&m_target_tmp, m_current->GetWidth(), m_current->GetHeight(), false, false, layers))
+	{
+		for (u32 l = 0; l < layers; l++)
+			DoShadeBoost(m_current->GetLayerProxyTexture(l), m_target_tmp->GetLayerProxyTexture(l), params.v);
+
+		m_current = m_target_tmp;
+	}
+}
+#endif
+
 void GSDevice::Resize(int width, int height)
 {
 	FlushDeferredDraws();

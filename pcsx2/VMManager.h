@@ -112,6 +112,13 @@ namespace VMManager
 	/// Returns true if there is an active virtual machine.
 	bool HasValidVM();
 
+#ifdef ENABLE_OPENXR
+	/// Outbreak VR: true while the network adapter is on (or PCSX2_TEST_ONLINE_LOCKS=1 forces it for testing). The VR
+	/// layer then keeps to its online rules (never pause, change speed, or load or save a state). Unlike PenguinScreen2,
+	/// nothing in VMManager itself enforces those locks yet.
+	bool IsOnlineLocked();
+#endif
+
 	/// Returns the path of the disc currently running.
 	std::string GetDiscPath();
 

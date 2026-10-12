@@ -43,6 +43,10 @@ public: // Public members
 	virtual void SetRawAnalogs(const std::tuple<u8, u8> left, const std::tuple<u8, u8> right) = 0;
 	virtual void SetRawPressureButton(u32 index, const std::tuple<bool, u8> value) = 0;
 	virtual void SetAxisScale(float deadzone, float scale) = 0;
+#ifdef ENABLE_OPENXR
+	// Outbreak VR: the pad's analog stick scale, which the VR Gamepad (VRInputSource) applies to its sticks too.
+	virtual float GetAxisScale() const { return 1.0f; }
+#endif
 	virtual void SetDiagonalScaleCorrection(bool enabled) = 0;
 	virtual float GetVibrationScale(u32 motor) const = 0;
 	virtual void SetVibrationScale(u32 motor, float scale) = 0;

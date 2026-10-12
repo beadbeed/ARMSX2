@@ -383,6 +383,22 @@ bool VMManager::HasValidVM()
 	return (state >= VMState::Running && state <= VMState::Resetting);
 }
 
+#ifdef ENABLE_OPENXR
+// Copied from PenguinScreen2 (VMManager.cpp), where it also guards SetPaused, DoLoadState, DoSaveState,
+// SetLimiterMode and UpdateTargetSpeed. Here only the VR layer asks it for now.
+bool VMManager::IsOnlineLocked()
+{
+	static const bool s_test_online_locks = []() {
+		const char* env = std::getenv("PCSX2_TEST_ONLINE_LOCKS");
+		const bool on = (env && env[0] == '1' && env[1] == '\0');
+		if (on)
+			Console.WriteLn("(VMManager) PCSX2_TEST_ONLINE_LOCKS: online locks forced on for testing");
+		return on;
+	}();
+	return EmuConfig.DEV9.EthEnable || s_test_online_locks;
+}
+#endif
+
 bool VMManager::HasValidOrInitializingVM()
 {
 	const VMState state = s_state.load(std::memory_order_acquire);

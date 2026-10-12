@@ -20,6 +20,10 @@
 
 #include "fmt/format.h"
 
+#ifdef ENABLE_OPENXR
+#include "VR/GameFeedback.h"
+#endif
+
 #include <array>
 #include <atomic>
 #include <memory>
@@ -137,6 +141,12 @@ using VibrationBindingArray = std::vector<PadVibrationBinding>;
 static BindingMap s_binding_map;
 static VibrationBindingArray s_pad_vibration_array;
 static std::mutex s_binding_map_write_lock;
+
+#ifdef ENABLE_OPENXR
+// Outbreak VR: bindings the VR layer lays over the ini's (SetVRBindingOverlay).
+static std::mutex s_vr_binding_overlay_mutex;
+static std::vector<InputManager::VRBindingOverlayEntry> s_vr_binding_overlay;
+#endif
 
 // Reverse lookups for controller navigation; user bindings take priority over static defaults.
 using ControllerButtonGenericMap = std::unordered_map<InputBindingKey, GenericInputBinding, InputBindingKeyHash>;
@@ -713,6 +723,9 @@ static std::array<const char*, static_cast<u32>(InputSourceType::Count)> s_input
 	"DInput",
 	"XInput",
 #endif
+#ifdef ENABLE_OPENXR
+	"VR",
+#endif
 }};
 
 InputSource* InputManager::GetInputSourceInterface(InputSourceType type)
@@ -740,6 +753,11 @@ bool InputManager::GetInputSourceDefaultEnabled(InputSourceType type)
 
 		case InputSourceType::XInput:
 			return false;
+#endif
+
+#ifdef ENABLE_OPENXR
+		case InputSourceType::VR:
+			return true;
 #endif
 
 		default:
@@ -919,6 +937,21 @@ void InputManager::AddPadBindings(SettingsInterface& si, u32 pad_index, bool is_
 						}},
 						bi.bind_type, si, section.c_str(), bi.name, is_profile);
 				}
+#ifdef ENABLE_OPENXR
+				{
+					const std::vector<std::string> vr_bindings(GetVRBindingOverlay(section, bi.name));
+					if (!vr_bindings.empty())
+					{
+						const float sensitivity = si.GetFloatValue(section.c_str(), fmt::format("{}Scale", bi.name).c_str(), 1.0f);
+						const float deadzone = si.GetFloatValue(section.c_str(), fmt::format("{}Deadzone", bi.name).c_str(), 0.0f);
+						AddBindings(
+							vr_bindings, InputAxisEventHandler{[pad_index, bind_index = bi.bind_index, sensitivity, deadzone](InputBindingKey key, float value) {
+								Pad::SetControllerState(pad_index, bind_index, ApplySingleBindingScale(sensitivity, deadzone, value));
+							}},
+							bi.bind_type, si, section.c_str(), bi.name, is_profile);
+					}
+				}
+#endif
 
 				// So per-game bindings never affect FullscreenUI navigation.
 				if (nav_si && bi.generic_mapping != GenericInputBinding::Unknown)
@@ -1033,6 +1066,21 @@ void InputManager::AddUSBBindings(SettingsInterface& si, u32 port, bool is_profi
 						}},
 						bi.bind_type, si, section.c_str(), bind_name.c_str(), is_profile);
 				}
+#ifdef ENABLE_OPENXR
+				{
+					const std::vector<std::string> vr_bindings(GetVRBindingOverlay(section, bind_name));
+					if (!vr_bindings.empty())
+					{
+						const float sensitivity = si.GetFloatValue(section.c_str(), fmt::format("{}Scale", bi.name).c_str(), 1.0f);
+						const float deadzone = si.GetFloatValue(section.c_str(), fmt::format("{}Deadzone", bi.name).c_str(), 0.0f);
+						AddBindings(
+							vr_bindings, InputAxisEventHandler{[port, bind_index = bi.bind_index, sensitivity, deadzone](InputBindingKey key, float value) {
+								USB::SetDeviceBindValue(port, bind_index, ApplySingleBindingScale(sensitivity, deadzone, value));
+							}},
+							bi.bind_type, si, section.c_str(), bind_name.c_str(), is_profile);
+					}
+				}
+#endif
 			}
 			break;
 
@@ -1495,6 +1543,10 @@ extern "C" void ARMSX2_iOSUpdatePadVibration(u32 pad_index, float large_intensit
 
 void InputManager::SetPadVibrationIntensity(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
 {
+#ifdef ENABLE_OPENXR
+	// Ahead of the bindings and independent of them, so a pad bound to the same port keeps its own rumble.
+	VR::GameFeedback::OnPadRumble(pad_index, large_or_single_motor_intensity, small_motor_intensity);
+#endif
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	ARMSX2_iOSUpdatePadVibration(pad_index, large_or_single_motor_intensity, small_motor_intensity);
 #endif
@@ -1570,6 +1622,9 @@ void InputManager::SetPadVibrationIntensity(u32 pad_index, float large_or_single
 
 void InputManager::PauseVibration()
 {
+#ifdef ENABLE_OPENXR
+	VR::GameFeedback::PauseRumble();
+#endif
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	// Nothing else stops the motor on the iOS path, so without this a pad that was
 	// rumbling when you opened the menu keeps rumbling behind it.
@@ -1930,11 +1985,50 @@ void InputManager::UpdateInputSourceState(SettingsInterface& si, std::unique_loc
 	}
 }
 
+#ifdef ENABLE_OPENXR
+bool InputManager::SetVRBindingOverlay(std::vector<VRBindingOverlayEntry> entries)
+{
+	std::lock_guard lock(s_vr_binding_overlay_mutex);
+	bool same = (entries.size() == s_vr_binding_overlay.size());
+	for (size_t i = 0; same && i < entries.size(); i++)
+	{
+		same = (entries[i].section == s_vr_binding_overlay[i].section) && (entries[i].key == s_vr_binding_overlay[i].key) &&
+			   (entries[i].binding == s_vr_binding_overlay[i].binding);
+	}
+	if (same)
+		return false;
+	s_vr_binding_overlay = std::move(entries);
+	return true;
+}
+
+std::vector<std::string> InputManager::GetVRBindingOverlay(const std::string_view section, const std::string_view key)
+{
+	std::vector<std::string> ret;
+	std::lock_guard lock(s_vr_binding_overlay_mutex);
+	for (const VRBindingOverlayEntry& e : s_vr_binding_overlay)
+	{
+		if (e.section == section && e.key == key)
+			ret.push_back(e.binding);
+	}
+	return ret;
+}
+
+bool InputManager::HasVRBindingOverlay()
+{
+	std::lock_guard lock(s_vr_binding_overlay_mutex);
+	return !s_vr_binding_overlay.empty();
+}
+#endif
+
 #include "Input/SDLInputSource.h"
 
 #ifdef _WIN32
 #include "Input/DInputSource.h"
 #include "Input/XInputSource.h"
+#endif
+
+#ifdef ENABLE_OPENXR
+#include "Input/VRInputSource.h"
 #endif
 
 void InputManager::ReloadSources(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
@@ -1943,5 +2037,8 @@ void InputManager::ReloadSources(SettingsInterface& si, std::unique_lock<std::mu
 #ifdef _WIN32
 	UpdateInputSourceState<DInputSource>(si, settings_lock, InputSourceType::DInput);
 	UpdateInputSourceState<XInputSource>(si, settings_lock, InputSourceType::XInput);
+#endif
+#ifdef ENABLE_OPENXR
+	UpdateInputSourceState<VRInputSource>(si, settings_lock, InputSourceType::VR);
 #endif
 }

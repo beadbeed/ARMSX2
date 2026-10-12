@@ -1,0 +1,346 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Outbreak VR profile (our own; not one of PenguinScreen2's CC BY-NC profiles).
+#
+# Measured on File #1 (J's Bar) with the ARMSX2 stereo testbed, 2026-10-07:
+#  - Outbreak's screen Z is exactly affine in 1/w (per-frame fit R2 = 1.000000,
+#    100% intercept agreement over 71 draws), so Z-driven depth is safe and
+#    gives every draw a correct depth, including untextured ones.
+#  - 1/w spans about 0.001 (far walls, w ~ 1000) to 0.018 (nearest props, w ~ 55).
+#    Convergence 55 puts the nearest props at the screen plane and everything
+#    else behind it.
+#  - Separation 0.012 per eye keeps distant content within an IPD-sized offset on
+#    a ~2 m wide virtual screen (no eye divergence).
+# File #2 runs the same engine; its values are carried over until measured.
+
+SLPM-65692:
+  name: "Biohazard Outbreak File 2 (Japan, English patch)"
+  crcs: [0x70C1FE97, 0xDC0BFB60, 0x6FCA6FBD, 0x70C0F696, 0x6FCB67BC]
+  tier: stereo
+  notes: "Fixed/rail cameras over real-time 3D rooms. First person: camera.lookAt puts the eye at the local character's head."
+  # World-locked screen for menus, the item screen, the map, cutscenes and doors: placed straight in front
+  # of the head each time first person hands over, 2.5 m out and 1.3 m tall (about 29 deg), kept flat (arc 0)
+  # for the menu pointer whatever the VR Screen Curve setting says. While first
+  # person drives the camera, the firstPerson screen is used instead: sized to the game camera's FOV
+  # (camera.fov below, 100 deg vertical: height = 2 * distance * tan(50 deg)), flat so perspective holds,
+  # and placed where the shown frame was rendered from (camera.lookAt viewMatrix; poseLagMs is the
+  # fallback guess), so the runtime can reproject it as the head turns. As on File #1, VR FirstPersonFov = Auto
+  # (the default) may widen camera.fov to the headset's view (100 the floor, 130 the cap) and the screen follows
+  # it; this height is the Profile setting's. menu: the menu tablet (VR setting Menu
+  # Tablet, off by default), as File #1's. The beam, the dot and the pointing hands work in menus here too.
+  # Point-to-select on the item screen (as File #1). File #2's cursor struct is at 0x7671F0, the same layout as File
+  # #1's 0x720B80 (found offline 2026-10-11 in Training Ground: open on (498,108), Right -> (550,108), Down -> (550,160)
+  # index 3, node 0x767448; cell 0's node is the struct + 0x90 as on File #1, cells 0x98 apart). Kevin's four cells and
+  # the equipped box are mapped: the box's node 0x768F98 (cell 0's + 49 * 0x98, as on File #1), index 0, x 550, y 216
+  # were measured offline on 2026-10-11; its rect is File #1's (the same screen layout), and Down from cell 2 or 3
+  # enters it as on File #1. suspendWhen: u8 0x767210 (the cursor struct + 0x20) is 1 while an item's command submenu
+  # is open (measured with File #1's 0x720BA0): nothing is pressed while it is, the trigger is yours, and after it
+  # closes steering waits until the dot moves to another cell (see File #1's notes).
+  # liveWhen (see File #1's notes: the when list alone also passes on the map and pause after an item-screen visit,
+  # since 0x4912BE is up for all three and the struct's +0x00 word stays 1): u8 0x76A604 is File #1's 0x723F94 (1 while
+  # the cursor is in your own grid) at the same offset from the cursor struct (+0x3414), as the cell nodes and the
+  # equipped box's node were. Verified offline 2026-10-11 (Training Ground slot 2): 1 on Kevin's cells 0 and 1, 0 in
+  # the equipped box, 0 with the screen closed and 0 on the map, exactly as File #1's 0x723F94.
+  menuPointer:
+    when:
+      - { address: 0x543004, equals: 3 }             # GAME overlay resident
+      - { address: 0x4912BE, equals: 1, width: 1 }   # item screen, map or pause open
+      - { address: 0x7671F0, equals: 1 }             # the item screen has been up (stays 1 after it closes)
+    liveWhen:
+      - { address: 0x76A604, equals: 1, width: 1 }   # the cursor in your own item grid (verified on File #2)
+    suspendWhen:
+      - { address: 0x767210, equals: 1, width: 1 }   # an item's command submenu is open
+    cursor: { node: 0x7671F4, index: 0x7671FC, x: 0x7671FE, y: 0x767200 }
+    hand: right        # the left controller (the Steam Frame's D-pad hand) never takes the pointer
+    coop: true
+    pressVsyncs: 2
+    gapVsyncs: 2
+    settleVsyncs: 10
+    maxPresses: 6
+    dwellMs: 150       # real hands drift across a cell's edge: the dot must hold a cell this long
+    armDelayMs: 300
+    enterInset: 0.12
+    cells:
+      - { node: 0x767280, index: 0, x: 498, y: 108, rect: [0.807, 0.184, 0.895, 0.307], right: 1, down: 2 }          # cell 0
+      - { node: 0x767318, index: 1, x: 550, y: 108, rect: [0.895, 0.184, 0.982, 0.307], left: 0, down: 3 }           # cell 1
+      - { node: 0x7673B0, index: 2, x: 498, y: 160, rect: [0.807, 0.307, 0.895, 0.430], up: 0, right: 3, down: 4 }   # cell 2
+      - { node: 0x767448, index: 3, x: 550, y: 160, rect: [0.895, 0.307, 0.982, 0.430], up: 1, left: 2, down: 4 }    # cell 3
+      - { node: 0x768F98, index: 0, x: 550, y: 216, rect: [0.888, 0.456, 0.979, 0.581], up: 2 }                      # equipped box
+  # Belt pouches (VR only, first person), as File #1's: four pouches on your chest laid out like the item screen's 2 x 2
+  # grid, and a fifth out from the belt buckle for the equipped box (menuPointer cell 4, node 0x768F98). Reach a hand into one and it ticks: once and lightly for an empty cell, twice and firmer while the cell holds
+  # an item (the local record's item byte +0xC94 + k for cell k, 0 = empty; checked offline: Kevin's cell 0 holds his
+  # .45 magazine; the equipped box shows the special item, the .45 Auto even while it is not equipped (Training Ground
+  # slot 1: special +0xC98 = 13, equipped +0xC8C = 0), so its pouch reads +0xC98; read only). An open hand reaching
+  # into a pouch that holds an item also shows its name for 1.5 s ("45 Auto Magazine x7", "Kevin's 45 Auto 7"), from
+  # the item table feedback.weapon names, once the record passes the weapon cues' checks (present, naming itself,
+  # yours); once per reach and not while a menu is up. Squeeze the grip in one: with the item screen closed it opens
+  # through the belt zone as a squeeze at your left hip does (you stop, then Start), and the menu pointer steers the
+  # cursor to that pouch's cell (the same D-pad presses as pointing, so it follows the Menu Pointer setting); with the
+  # screen up a squeeze just moves the cursor there. The trigger (Circle) still picks it: nothing is ever confirmed for
+  # you, and a squeeze is refused while an item's command submenu is open (suspendWhen: the cursor struct 0x7671F0 +
+  # 0x20). Only while first person is armed, so never on obsrv.
+  # Layout, in metres from your eyes the way the zones are placed (side + right, height + up, forward + ahead), measured
+  # sitting upright and looking ahead; each pouch is a ball 6.5 cm round its point. As File #1's, a starting point to
+  # tune in the headset, high and narrow to keep clear of the hip zones:
+  #              left                    right
+  #   chest      cell 0 (-0.10, -0.20)   cell 1 (0.10, -0.20)   forward 0.14
+  #   ribs       cell 2 (-0.07, -0.29)   cell 3 (0.07, -0.29)   forward 0.24
+  #   buckle     equipped box (0.0, -0.40)                      forward 0.28
+  # anchor: seat hangs them from your neck and turns them with the forward you last recentered to, so looking down at a
+  # pouch, or glancing at it, does not move it; if they feel turned, sit facing forward and recenter (both stick clicks,
+  # or the Steam button's recenter). The zones come first: within 23 cm of the holster's point your right hand is the
+  # holster's, and within 23 cm of the belt's your left hand is the belt's, even inside a pouch, so a squeeze at your hip
+  # does what it always did. Facing ahead every pouch keeps at least 5 cm round its point clear of both, for either hand.
+  # An empty pouch ticks with a short sharp tap, not the zones' softer entry tick.
+  pouches:
+    anchor: seat
+    open: belt
+    hand: either
+    radius: 0.065
+    suspendWhen: [{ address: 0x767210, equals: 1, width: 1 }]   # an item's command submenu is open
+    list:
+      - { cell: 0, item: 0xC94, side: -0.10, height: -0.20, forward: 0.14 }   # upper left chest  -> item cell 0
+      - { cell: 1, item: 0xC95, side: 0.10, height: -0.20, forward: 0.14 }    # upper right chest -> item cell 1
+      - { cell: 2, item: 0xC96, side: -0.07, height: -0.29, forward: 0.24 }   # lower left        -> item cell 2
+      - { cell: 3, item: 0xC97, side: 0.07, height: -0.29, forward: 0.24 }    # lower right       -> item cell 3
+      - { cell: 4, item: 0xC98, side: 0.0, height: -0.40, forward: 0.28 }     # buckle -> the equipped box (special item)
+  screen: { distance: 2.5, height: 1.3, arc: 0, menu: { distance: 0.70, height: 0.36, drop: 0.30 }, firstPerson: { distance: 1.5, height: 3.575, arc: 0, poseLagMs: 40 } }
+  # Headset only: a gamma lift so the dark rooms read on a headset's LCD without washing out the blacks.
+  # Applied only while first person drives the camera (firstPersonOnly defaults to true), so menus and the
+  # item screen keep their own levels; 1.0 is neutral. Carried over from File #1 until tuned in the headset.
+  presentation: { gamma: 1.2 }
+  # Controller haptics (VR only). Memory reads only, nothing is written, so they work the same online.
+  # The game's own DualShock rumble goes to the controllers (the VR "Forward Game Rumble" setting). While
+  # first person is armed: losing HP (u16 at local record +0x540, max HP at +0x542: File #2's record
+  # differs from File #1's; not yet checked live) pulses both hands, harder the bigger the hit, and below
+  # a quarter of max HP (a placeholder) the left hand feels a heartbeat. Hurt and heartbeat keep going
+  # while grabbed, down or dead. Weapon: the u8 at local record +0xC8C is the equipped item's record
+  # index (0 = bare hands) in the 60-byte item table at 0x397B40, laid out as File #1's (checked in
+  # savestates). With the stance raised a drop of the rounds is a shot (aim-hand kick, pistol recoil), a
+  # rise is a reload, and an empty gun clicks on a trigger pull. The reload action byte is not measured
+  # yet, so no action/reload here. Nothing equipped shows bare hands; the wrist card shows the weapon's name and
+  # rounds ("45 AUTO 7"), and the belt pouches name their items from the same table.
+  feedback: { padRumble: true, hurt: { offset: 0x540, max: 0x542, width: 2 }, danger: { below: 0.20 }, weapon: { equipped: 0xC8C, table: 0x397B40 } }
+  # Wrist card (VR only, first person): turn the left wrist to the face to read the character's condition
+  # (FINE / CAUTION below 60% of max HP / DANGER below 20% / BLEED), an HP bar and the virus gauge. Reads
+  # only. Local record offsets: HP u16 +0x540 of max +0x542; virus counter u32 +0xBC4 over the u32 maximum
+  # for the u8 character id at +0xBB0 in the table at 0x728500 (GAME overlay data, read only while first
+  # person is armed); bleeding while u16 +0xC6A is non-zero.
+  hud: { wrist: { hp: { offset: 0x540, max: 0x542, width: 2 }, virus: { offset: 0xBC4, maxTable: 0x728500, charOffset: 0xBB0 }, bleed: { offset: 0xC6A, width: 2 } } }
+  stereo:
+    separation: 0.012
+    convergence: 55.0
+    zDrivenDepth: true
+    # First-person screen (1.5 m away, 4.77 m wide). auto derives separation = IPD / screen width and
+    # convergence = distance x unitsPerMeter from the headset and the first-person screen as placed, so far
+    # content lands one IPD apart and the screen plane sits at the screen's distance, eased in over 0.5 s on
+    # each arm. The numbers are the fallback until the headset reports its eyes, or with VR
+    # FirstPersonAutoStereo off (0.0132 = 0.063 m / 4.77 m, 150 = 1.5 m x 100 units/m). VR
+    # FirstPersonStereoStrength scales it. nearest: true depth continues in front of the screen plane down
+    # to 1.0 m perceived instead of flattening everything nearer onto it; textured, perspective-Q draws
+    # only, so 2D overlays (the game's message text) stay on the screen plane, and a counter nearer than
+    # it then shows in front of text drawn over it. 1.0 m, not wave 4's 0.75, keeps that conflict small
+    # until the near field has been judged in the headset. VR NearDepthMetres overrides it; if the game's
+    # own text looks doubled or sunk into a surface, [VR] NearDepthMetres = -1 turns the near field off.
+    firstPerson: { separation: 0.0132, convergence: 150, nearest: 1.0, auto: true }
+    # Menus flat (as File #1): while the item screen, the map or pause is up (u8 0x4912BE = 1, the flag
+    # camera.lookAt.pauseWhen reads) the picture goes at zero separation, so the menu lies on the screen's plane with
+    # the menu pointer's dot.
+    scenes:
+      - { when: { address: 0x4912BE, equals: 1, width: 1 }, separation: 0, label: menu }
+  # First-person camera (only with --vr and the VR 'Head-Tracked Camera' setting, on by default).
+  # Outbreak builds its view from an eye and a target vector. During normal room play (GAME overlay
+  # resident, scenario in game, room camera in normal mode) the room camera's three cut handlers and the
+  # door follow camera's eye writes are NOP'd, so nothing overwrites them; the view build after them still
+  # runs. camera.lookAt then writes the eye at the local character's head every vsync, looking along the
+  # character's heading (+0x92) plus head yaw, tilted by head pitch, moved by head translation (cm units).
+  # File #2 code words checked against our 2.DAT; heading +0x92 (carried over from File #1) was checked live in 6c4fbdc.
+  # Research notes: tools/outbreak-vr and D:/Games/PS2/research on the test PC.
+  camera:
+    networkFlag: 0x3137D2   # u8 1 while the game is in network play. Online, first person arms only in private co-op
+                          # (VR setting PrivateCoopFirstPerson + the Internal DNS as DNS1, sending the login host to a LAN or Tailscale server); see CameraDriver::ResolveNetMode.
+    # Local character record. count/idOffset: a used record's +0x03 byte is its own index and the local record's
+    # equals the local slot byte (checked offline in the Training Ground), as File #1's game code tests; first person
+    # writes only a record that passes, and nothing while it fails.
+    base: { indexed: 0x47BD30, indexAddr: 0x4912BD, indexWidth: 1, stride: 0x1100, count: 4, idOffset: 0x03 }
+    guards:
+      - { address: 0x543004, equals: 3 }             # GAME overlay resident
+      - { address: 0x4912A0, equals: 2, width: 1 }   # scenario status: in game
+      - { address: 0x3B31F5, equals: 0, width: 1 }   # room camera in normal mode (not a scripted shot)
+    # The camera update flips the mode byte to 3 and back inside a frame about 12 times a second;
+    # only hand the camera back once the guards have failed for 0.1 s.
+    disarmAfterVsyncs: 6
+    silence:
+      - { address: 0x595248, on: 0x00000000, off: 0x0C165504, when: [{ address: 0x543004, equals: 3 }] }   # fixed-cut handler
+      - { address: 0x595258, on: 0x00000000, off: 0x0C165670, when: [{ address: 0x543004, equals: 3 }] }   # spline cut handler
+      - { address: 0x595268, on: 0x00000000, off: 0x0C165548, when: [{ address: 0x543004, equals: 3 }] }   # rail cut handler
+      - { address: 0x5AA818, on: 0x00000000, off: 0x0C0D0D3C, when: [{ address: 0x543004, equals: 3 }] }   # door follow camera eye write
+      - { address: 0x5AA978, on: 0x00000000, off: 0x0C0D0D3C, when: [{ address: 0x543004, equals: 3 }] }   # door follow camera eye write
+      - { address: 0x5AAAB4, on: 0x00000000, off: 0x0C0D0D3C, when: [{ address: 0x543004, equals: 3 }] }   # door follow camera eye write
+      - { address: 0x6363B8, on: 0x00000000, off: 0xA2A20FBA, when: [{ address: 0x543004, equals: 3 }] }   # stick latch on camera-cut lines (would freeze gaze steering)
+      # Co-op (coopOnly): your heading goes to the other players in a type-2 heartbeat (0x638ED8, File #1's
+      # FUN_00633530) only every 30 game frames; every 3 instead (about 10 Hz, 0x18-byte messages). File #2's
+      # heartbeat already sends while you aim (its state check at 0x638BB0 accepts the aim-idle state), so unlike
+      # File #1 only the interval needs changing. Found by instruction pattern in the File #2 savestate.
+      - { address: 0x638F00, on: 0x24030003, off: 0x2403001E, when: [{ address: 0x543004, equals: 3 }], coopOnly: true }   # heartbeat interval 30 -> 3 (addiu v1,zero,3)
+      # Aim pitch (see lookAt.aim): the gun-elevation servo's easing calls and stores to +0xBE0 (2.DAT 0x557D04-0x557DEC)
+      # are NOP'd only while your weapon is raised (stance 2) and never online-safe, so the pitch written from the
+      # controller holds. They are put back as soon as the weapon is lowered. The servo is shared, so partners' aim
+      # pitch holds still while you aim.
+      - { address: 0x557D70, on: 0x00000000, off: 0x0C0D278C, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: easing call
+      - { address: 0x557D88, on: 0x00000000, off: 0x0C0D278C, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: easing call
+      - { address: 0x557DA0, on: 0x00000000, off: 0x0C0D278C, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: easing call
+      - { address: 0x557DD0, on: 0x00000000, off: 0xA6400BE0, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: sh zero, 0xBE0(s2)
+      - { address: 0x557DDC, on: 0x00000000, off: 0xA6430BE0, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: sh v1, 0xBE0(s2)
+      - { address: 0x557DE8, on: 0x00000000, off: 0xA6430BE0, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: sh v1, 0xBE0(s2)
+      - { address: 0x557DEC, on: 0x00000000, off: 0xA6400BE0, when: [{ address: 0x543004, equals: 3 }], activeWhen: [{ offset: 0x08, equals: 2, width: 1 }], offlineOnly: true }   # gun-elevation servo: sh zero, 0xBE0(s2)
+    lookAt:
+      eye: 0x313548
+      target: 0x313554
+      position: 0x38      # f32 x, y (up), z
+      heading: 0x92       # s16, 0x10000 = 360 deg, 0 faces +Z
+      eyeHeight: 155
+      eyeForward: 10      # about where the eyes are; the body is hidden (see hold) while your head stays within about
+                          # 19 cm above / 50 cm around where you recentered: recenter if it ever shows
+      distance: 100
+      roll: 0x31359C         # camera roll (s32 holding a 16-bit angle): written level (rollSign 0) so a cut's
+      rollSign: 0          # roll can't stay latched; the first-person screen itself stays roll-level
+      unitsPerMeter: 100
+      # Outbreak's yaw grows counter-clockwise like the headset's (checked: with the camera held at yaw W,
+      # stick left walks toward W+90, right toward W-90), so yawSign stays 1.
+      # Movement is camera-relative in the default control type: stick up walks where the camera
+      # looks, i.e. where you look. So the camera keeps its own yaw (the way the character faces each
+      # time first person takes over or you recenter), turned smoothly by the right controller stick
+      # (120 deg/s at full push), or in 30 deg steps with the VR "Snap Turning" setting.
+      yawAnchor: true
+      smoothTurnDegPerSec: 120
+      snapTurnDeg: 30
+      snapStick: right
+      # Weapon raised (stance 2, R1 or the hip holster): the character faces where the right
+      # controller points, and aims as far up or down as it points (s16 +0xBE0, found statically in 2.DAT;
+      # pitchSign carried over from File #1, where positive is up, not yet checked live on File #2).
+      # Offline only: it needs the servo silenced (the offlineOnly silence entries above); online-safe the
+      # game keeps its own pitch. pitchClamp 8000 stays under the game's own 8192 clamp.
+      # Walk and shoot: with the weapon up the left stick moves you at 70 cm/s (where you look, like
+      # walking); the game itself would only turn and tilt the aim with it. Checked on File #1: walls
+      # still stop you (the game's collision pushes the position back out).
+      aim: { stance: 0x08, equals: 2, hand: right, move: 70, moveStick: left, pitch: 0xBE0, pitchSign: 1, pitchClamp: 8000 }
+      # Checked live on File #2 (Training Ground): item screen flag, near-cull table, view matrix and the
+      # stick magnitude (+0xFA8: the record is 0x20 longer than File #1's). The action byte is +0x54B (File #1's
+      # +0x54F; measured 2026-10-11: idle 0, walk 1, run 3, aiming 128), so body-follow checks idle as File #1 does.
+      pauseWhen: [{ address: 0x4912BE, equals: 1, width: 1 }]
+      bodyFollow:
+        - { offset: 0x08, equals: 1, width: 1 }     # stance: normal (2 = weapon raised)
+        - { offset: 0x54B, equals: 0, width: 1 }    # action: idle (1 walk, 3 run, 128 aiming)
+        - { offset: 0xFA8, equals: 0, width: 2 }    # stick magnitude: centred
+      # Grabbed by a zombie (stance 5, checked on File #1: bites follow until Kevin breaks free), or down / dead /
+      # turned (status 0xBB8: 0x08-0x0B down, 0x0C down in gas, above that dead, 0x30-0x34 zombie; dead values also
+      # run above 0x3F, so the range goes to 0xFF): the game's own
+      # camera shows it on the world screen; first person comes back facing the way the character does.
+      releaseWhen:
+        - { offset: 0x08, equals: 5, width: 1 }
+        - { offset: 0xBB8, min: 0x08, max: 0xFF, width: 1 }
+      hold:
+        # Focus slot as File #1: never a partner. Slot 3 while its record is empty (max HP +0x542 is 0), else slot 2
+        # when you are slot 3 and it is empty; a full room holds nothing.
+        - { address: 0x3B31F4, value: 3, width: 1, restoreFrom: 0x4912BD, when: [{ address: 0x4912BD, notEquals: 3, width: 1 }, { address: 0x47F572, equals: 0, width: 2 }], notes: "camera focus slot: 3 while that record is empty" }
+        - { address: 0x3B31F4, value: 2, width: 1, restoreFrom: 0x4912BD, when: [{ address: 0x4912BD, equals: 3, width: 1 }, { address: 0x47E472, equals: 0, width: 2 }], notes: "camera focus slot: 2 while empty (you are slot 3)" }
+        - { address: 0x718DB4, f32: 75.0, restoreF32: 80.0, when: [{ address: 0x543004, equals: 3 }], notes: "near-cull radius, characters" }
+      viewMatrix: 0x3134F0
+      syncFramesBack: 2
+      # A smooth stick turn is rendered ahead by how late frames reach the screen (measured, at most
+      # 120 ms), so its leading edge shows no black band; heading, aim and walking keep the true yaw.
+      # The head is led too, by its angular velocity times that latency times this damping (0.8).
+      # 0 turns both off.
+      predict: 0.8
+    fov: { address: 0x313590, encoding: f32, scale: 100.0 }   # vertical FOV, degrees (about 115 horizontal at 4:3); the floor of VR FirstPersonFov = Auto
+  # Shake to break free (VR controllers only), as File #1 (see SLPM-65428.yaml for the measurements): while grabbed,
+  # shaking either controller waggles your left stick and presses Circle and Cross in turn on your own pad, with a short
+  # buzz on the shaking hand for each press; a button you hold yourself is never let go, and it stops the poll the grab
+  # ends. Stance 5 for grabbed is carried over from File #1 (same engine, not yet checked on File #2: no savestate with
+  # an enemy yet); the status byte +0xBB8 is 0x00 in normal play (0x08 and up: down, dead, turned). Never while a menu
+  # is up and never on obsrv; private co-op is fine (only your own pad input).
+  breakout:
+    grabbed:
+      - { offset: 0x08, equals: 5, width: 1 }               # stance: grabbed (as File #1)
+      - { offset: 0xBB8, min: 0x00, max: 0x07, width: 1 }   # status: normal play (not down, dead or turned)
+    shakeSpeed: 1.0
+    reversals: 3
+    reversalWindowMs: 300
+    reversalSpeed: 0.25
+    holdMs: 250
+    stickHz: 6
+    pressHz: 8
+    pressMs: 60
+    buzz: 0.35
+    buzzMs: 20
+  # VR controllers (only when launched with --vr; flat play is untouched).
+  # A pad bound in Settings -> Controllers (e.g. a DualSense) keeps working alongside;
+  # when both touch the same button, the latest change wins.
+  #
+  # Layout from the reverse-engineered button map (outbreak-vr docs/game-internals.md,
+  # Controller TYPE A, the default). Circle = OK/attack/fire, Cross = cancel/back
+  # (hold + forward = run), Square = ad-lib, Triangle = map, Start = item screen,
+  # R1 held = weapon ready with lock-on, L1 = reload / next target / tab.
+  # Select (pause/options) stays off the controllers on purpose: online it doesn't pause.
+  # Steam Frame: A, B, X, Y and Menu are on the right controller, the D-pad and View on the left.
+  # Touch-style controllers: A/B right, X/Y and Menu left. Y (the top button) opens the map on both.
+  # The right stick turns the view (camera.lookAt), so it is not passed to the game as a stick. A quick
+  # flick of it straight up or down (RightStickUp/Down) presses the PS2 right stick's up/down, the
+  # ad-lib shouts; a mostly vertical push doesn't turn the view.
+  # Running: click the left stick while walking and you keep running (Cross held) until the stick
+  # is centred, so the right thumb stays free to turn. The latch is ORed into ButtonB (params
+  # sprintLatch), so a tap of B can't let it go; it lets go as the item screen, a menu, a cutscene
+  # or the raised weapon takes over.
+  #
+  # The grips are for gestures only, so a squeeze at the hip can't also do something
+  # else (Outbreak doesn't use L2). Zones are placed from the head (metres: side + right, height + up, forward +
+  # ahead) and turn with the head's yaw. Squeeze the grip inside one to press its button;
+  # it holds until the grip opens, wherever the hand goes.
+  # To tune: copy this file into <data dir>/vrprofiles/ and edit the copy.
+  controls:
+    - device: Gamepad
+      id: controllers
+      pad: 1
+      params: { sprintLatch: ButtonB }
+      bind:
+        RightTriggerPress: Circle
+        ButtonA: Circle
+        ButtonB: Cross
+        ButtonX: Square
+        ButtonY: Triangle
+        Menu: Start
+        RightBumper: R1
+        DpadUp: Up
+        DpadDown: Down
+        DpadLeft: Left
+        DpadRight: Right
+        LeftTriggerPress: L1
+        RightStickClick: R3
+        LeftStickX: LeftStickX
+        LeftStickY: LeftStickY
+        RightStickUp: RUp
+        RightStickDown: RDown
+    - device: Zone
+      id: holster
+      notes: "Right hip holster: squeeze the grip there to ready the weapon (R1, lock-on); keep squeezing to stay aimed."
+      placement: { side: 0.22, height: -0.50, forward: 0.12 }   # seated thigh/hip; standing hip is -0.62 / 0.0
+      params: { radius: 0.20, hand: right, grip: true }
+      pad: 1
+      bind:
+        Pressed: R1
+    - device: Zone
+      id: belt
+      notes: "Left hip: squeeze the left grip there to open the item screen (Start), shown in front of you; squeeze there again to close it."
+      placement: { side: -0.22, height: -0.50, forward: 0.12 }   # mirror of the holster
+      params: { radius: 0.20, hand: left, grip: true, stopFirst: true }   # the item screen only opens standing still: stop, then press
+      pad: 1
+      bind:
+        Pressed: Start
+    - device: Zone
+      id: backpack
+      notes: "Over the right shoulder: reach back past your ear and squeeze the grip to open the item screen (Start)."
+      placement: { side: 0.15, height: -0.05, forward: -0.08 }   # a chair back blocks reaching further
+      params: { radius: 0.15, hand: right, grip: true, stopFirst: true }
+      pad: 1
+      bind:
+        Pressed: Start

@@ -1612,6 +1612,126 @@ struct Pcsx2Config
 		bool operator!=(const SavestateOptions& right) const;
 	};
 
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame): PenguinScreen2's [VR] settings for the OpenXR VR layer (pcsx2/VR),
+	// copied unchanged. Its keys do not clash with VR/StereoSettings' own [VR] keys.
+	struct VROptions
+	{
+		bool Enable = false;
+
+		std::string XrSeatRuntimeDirs;
+		std::string XrSeatRuntimeJsons;
+
+		float ScreenDistance = 2.0f;
+		float ScreenHeight = 1.4f;
+
+		float ScreenVerticalOffset = 0.0f;
+
+		float ScreenArcDeg = 100.0f;
+
+		bool StereoMode = true;
+		bool StereoUseProfile = true;
+		float StereoSeparation = 0.02f;
+		float StereoConvergence = 20.0f;
+
+		bool HeadCamera = true;
+		// First person: turn the view in steps on the turn stick instead of smoothly.
+		bool SnapTurn = false;
+		// A short fade to black and back over the whole headset view on each snap turn and each change
+		// between the first-person and the world screen, hiding the jump. Only what this player sees.
+		bool ComfortBlink = true;
+		// First person: a thin red beam from the pistol's muzzle along the aim while the weapon is raised.
+		// Drawn in the headset only, so only what this player sees.
+		bool LaserSight = true;
+		// First person, while a menu is up: a beam and a dot where the controller points at the menu screen, the hands
+		// drawn as empty pointing hands, and (for games whose profile maps the menu) the game's own cursor steered to
+		// the cell pointed at with D-pad presses from this player's own pad; the trigger stays the player's confirm,
+		// nothing is ever confirmed for them. Online only in private co-op, and only where the profile allows it.
+		bool MenuPointer = true;
+		// First person, while a menu is up: the menu on a small screen tilted up in front of the chest, like a tablet,
+		// instead of the world screen. Shown in the headset only.
+		bool MenuTablet = false;
+		// First person: darkens the edges of the headset view while the view turns or walks without the head
+		// (smooth stick turns, walking), the more the faster it moves; snap turns keep the blink instead.
+		// Drawn in the headset only, so only what this player sees.
+		bool ComfortVignette = false;
+		// How dark the vignette's edges get at full motion.
+		static constexpr float MIN_VIGNETTE_STRENGTH = 0.2f;
+		static constexpr float MAX_VIGNETTE_STRENGTH = 1.0f;
+		static constexpr float DEFAULT_VIGNETTE_STRENGTH = 0.6f;
+		float VignetteStrength = DEFAULT_VIGNETTE_STRENGTH;
+		// Turns off the first-person extras that change gameplay (walking while aiming, aim pitch from the
+		// controller). Also on whenever the network adapter is enabled, except in private co-op (below),
+		// where first person plays in full unless this is set.
+		bool OnlineSafe = false;
+		// First person online, in co-op on a private server only. Off: first person never arms while the
+		// network adapter is on or the game is online. On: it may arm online, but only while the PS2's primary DNS is
+		// DEV9's Internal DNS and its hosts entry sends the game's login host to a LAN, Tailscale or loopback address
+		// (see CameraDriver::LoginHostIsPrivate and ResolveNetMode).
+		bool PrivateCoopFirstPerson = false;
+		// First-person near depth, in metres: how near true stereo depth reaches before it flattens onto that
+		// plane. 0 = the profile's stereo.firstPerson.nearest, below 0 = off (flatten at the convergence plane
+		// as before), above 0 = this value (clamped to 0.45-1.5 m).
+		float NearDepthMetres = 0.0f;
+		// First person: turn the stereo parallax with head roll so a tilted head sees no vertical disparity.
+		bool RollParallax = true;
+		// Derive first-person separation and convergence from the headset IPD and the first-person screen, for
+		// profiles with stereo.firstPerson.auto; false = the profile's numbers.
+		bool FirstPersonAutoStereo = true;
+		// How deep the first-person stereo looks: 1.0 = life-size, below flattens toward the screen distance, above
+		// deepens near objects while distant ones never pass parallel.
+		static constexpr float MIN_FP_STEREO_STRENGTH = 0.5f, MAX_FP_STEREO_STRENGTH = 1.5f;
+		float FirstPersonStereoStrength = 1.0f;
+		// First person: the game camera's field of view. Auto fits it to the headset on each first-person arm (both eyes'
+		// furthest reach plus FirstPersonFovMarginDeg, never below the profile's camera.fov nor above 130 deg, eased in
+		// over half a second) and the first-person screen is sized to match, so the game draws the room out to the edge of
+		// the view; Profile keeps the profile's camera.fov. Only for profiles whose first-person screen is sized to it.
+		// Profile by default until Alex has tried the build in the headset (Auto makes the centre of the picture softer).
+		enum struct FirstPersonFovMode : int
+		{
+			Auto = 0,
+			Profile = 1,
+		};
+		static const char* FirstPersonFovModeNames[];
+		FirstPersonFovMode FirstPersonFov = FirstPersonFovMode::Profile;
+		// Degrees added to the headset's field of view by FirstPersonFov = Auto (half above and below the view, and as
+		// much to each side), so a turn of the head is seen before the edge of the picture.
+		static constexpr float MIN_FP_FOV_MARGIN_DEG = 0.0f, MAX_FP_FOV_MARGIN_DEG = 20.0f, DEFAULT_FP_FOV_MARGIN_DEG = 6.0f;
+		float FirstPersonFovMarginDeg = DEFAULT_FP_FOV_MARGIN_DEG;
+		// First person: around the first-person screen the headset shows a dim, blurred continuation of the picture's edges
+		// instead of black (a fast head turn shows more room, not a black border). Needs OpaqueBackground; read when VR
+		// starts. Off by default until Alex has tried the build in the headset.
+		bool EdgeFill = false;
+
+		// Headset brightness: scales the gamma of the presentation lift (1.0 = neutral) on top of the
+		// profile's own. Applied only while a VR session runs, so flat play is never touched.
+		float Brightness = 1.0f;
+		static constexpr float MIN_BRIGHTNESS = 0.8f;
+		static constexpr float MAX_BRIGHTNESS = 1.8f;
+
+		// Forward the game's DualShock rumble to the VR controllers, for profiles whose feedback block asks
+		// for it, on the pad port of the profile's VR Gamepad.
+		bool GameRumble = true;
+		// Scales the game-feedback haptics (forwarded rumble, hit, shot and heartbeat cues); 0 turns them off.
+		float HapticStrength = 1.0f;
+		// Frames go to the headset from the VR pacer thread at the display rate; false = legacy, one frame per GS
+		// present.
+		bool HeadsetRateSubmit = true;
+		// An opaque black projection layer under the screens, so the runtime's environment never shows around them.
+		bool OpaqueBackground = true;
+		// Hands, laser sight and wrist card are placed every headset display frame on the VR pacer from the controller pose
+		// for that frame (their images are still drawn on the GS thread); false = placed once per GS present. Only with
+		// HeadsetRateSubmit.
+		bool HandsDisplayRate = true;
+
+		VROptions();
+		void LoadSave(SettingsWrapper& wrap);
+
+		bool operator==(const VROptions& right) const;
+		bool operator!=(const VROptions& right) const;
+	};
+#endif
+
 	// ------------------------------------------------------------------------
 
 	BITFIELD32()
@@ -1663,6 +1783,10 @@ struct Pcsx2Config
 	AchievementsOptions Achievements;
 
 	ArcadeOptions Arcade;
+
+#ifdef ENABLE_OPENXR
+	VROptions VR;
+#endif
 
 	// Memorycard options - first 2 are default slots, last 6 are multitap 1 and 2
 	// slots (3 each)
@@ -1743,6 +1867,9 @@ namespace EmuFolders
 	extern std::string InputProfiles;
 	extern std::string DebuggerLayouts;
 	extern std::string DebuggerSettings;
+#ifdef ENABLE_OPENXR
+	extern std::string VRProfiles;
+#endif
 
 	/// Initializes critical folders (AppRoot, DataRoot, Settings). Call once on startup.
 	void SetAppRoot();

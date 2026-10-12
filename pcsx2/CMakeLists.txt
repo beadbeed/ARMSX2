@@ -1693,6 +1693,81 @@ endif()
 
 target_sources(PCSX2 PRIVATE ${pcsx2USBSources} ${pcsx2USBHeaders})
 
+# Outbreak VR (Steam Frame): PenguinScreen2's OpenXR VR layer, copied into VR/ (VR/VR-SOURCE.md
+# lists what came from where and every local edit). Only with ENABLE_OPENXR, which only
+# outbreak-vr.yml turns on; every other build compiles none of it. VR/StereoState.cpp is already
+# in pcsx2GSSources (ENABLE_VR_STEREO), and VR/StereoSettings stays ARMSX2's own.
+if(ENABLE_OPENXR)
+	set(pcsx2VRSources
+		VR/BeltPouches.cpp
+		VR/CameraDriver.cpp
+		VR/ControlQuads.cpp
+		VR/GameFeedback.cpp
+		VR/GrabBreakout.cpp
+		VR/HandModel.cpp
+		VR/HudCards.cpp
+		VR/ItemData.cpp
+		VR/MenuPointer.cpp
+		VR/SplitState.cpp
+		VR/SeatCast.cpp
+		VR/SeatSession.cpp
+		VR/SpatialControls.cpp
+		VR/DepthHistogram.cpp
+		VR/HeadPose.cpp
+		VR/MemWatch.cpp
+		VR/PadLook.cpp
+		VR/StereoDump.cpp
+		VR/StereoAuto.cpp
+		VR/VRInput.cpp
+		VR/VRManager.cpp
+		Input/VRInputSource.cpp
+		VR/VRProfileDB.cpp
+		VR/VRVulkanBridge.cpp
+		VR/XRCompositor.cpp
+		VR/XRSession.cpp
+	)
+	set(pcsx2VRHeaders
+		VR/BeltPouches.h
+		VR/CameraDriver.h
+		VR/ControlQuads.h
+		VR/GameFeedback.h
+		VR/GrabBreakout.h
+		VR/HandModel.h
+		VR/HudCards.h
+		VR/ItemData.h
+		VR/MenuPointer.h
+		VR/SplitState.h
+		VR/SeatCast.h
+		VR/SeatSession.h
+		VR/SpatialControls.h
+		VR/DepthHistogram.h
+		VR/HeadPose.h
+		VR/MemWatch.h
+		VR/PadLook.h
+		VR/StereoDump.h
+		VR/StereoAuto.h
+		VR/VRInput.h
+		VR/VRInputState.h
+		Input/VRInputSource.h
+		VR/VRInternal.h
+		VR/VRManager.h
+		VR/VRProfileDB.h
+		VR/VRVulkanBridge.h
+		VR/XRCompositor.h
+		VR/XRSession.h
+	)
+	# Outside the LTO list, as in PenguinScreen2.
+	target_sources(PCSX2 PRIVATE ${pcsx2VRSources} ${pcsx2VRHeaders})
+	target_link_libraries(PCSX2_FLAGS INTERFACE openxr_loader)
+	# The exception island, as in PenguinScreen2: XRSession and SeatSession catch what a runtime's
+	# client library throws (WiVRn throws on a lost connection, also during teardown), and catching
+	# needs landing pads in the frames it unwinds through. Everything else stays -fno-exceptions.
+	# The precompiled header is built -fno-exceptions and cannot be mixed in.
+	set_source_files_properties(VR/SeatSession.cpp VR/XRSession.cpp PROPERTIES
+		COMPILE_OPTIONS "-fexceptions"
+		SKIP_PRECOMPILE_HEADERS ON)
+endif()
+
 if(APPLE OR BSD)
 	# Disc sources use IOKit, which exists on neither iOS nor tvOS.
 	if(ARMSX2_IOS)

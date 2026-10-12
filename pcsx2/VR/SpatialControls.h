@@ -1,0 +1,701 @@
+// SPDX-FileCopyrightText: 2026 Patrick Carey <patrickfcarey@gmail.com>
+// SPDX-License-Identifier: GPL-3.0
+
+#pragma once
+
+#include "common/Pcsx2Defs.h"
+
+#include "VR/GrabBreakout.h"
+#include "VR/VRInputState.h"
+
+#include <array>
+#include <optional>
+#include <span>
+#include <string_view>
+
+namespace VR::SpatialControls
+{
+	struct Vec3
+	{
+		float x = 0.0f, y = 0.0f, z = 0.0f;
+	};
+	Vec3 operator+(const Vec3& a, const Vec3& b);
+	Vec3 operator-(const Vec3& a, const Vec3& b);
+	Vec3 operator*(const Vec3& a, float s);
+	float Dot(const Vec3& a, const Vec3& b);
+	float Length(const Vec3& a);
+
+	struct Quat
+	{
+		float x = 0.0f, y = 0.0f, z = 0.0f, w = 1.0f;
+		Vec3 Rotate(const Vec3& v) const;
+		static Quat FromYaw(float radians);
+		Quat Conjugate() const;
+		Quat operator*(const Quat& other) const;
+	};
+
+	struct Frame
+	{
+		Vec3 pivot;
+		Quat orientation;
+		Vec3 Right() const { return orientation.Rotate({1.0f, 0.0f, 0.0f}); }
+		Vec3 Up() const { return orientation.Rotate({0.0f, 1.0f, 0.0f}); }
+		Vec3 Forward() const { return orientation.Rotate({0.0f, 0.0f, -1.0f}); }
+		Vec3 ToWorld(const Vec3& local) const { return pivot + orientation.Rotate(local); }
+		Vec3 ToLocal(const Vec3& world) const { return orientation.Conjugate().Rotate(world - pivot); }
+	};
+
+	struct Anchor
+	{
+		Vec3 position;
+		float yaw = 0.0f;
+	};
+
+	struct Placement
+	{
+		float side = 0.0f;
+		float height = 0.0f;
+		float forward = 0.0f;
+		float yaw_deg = 0.0f;
+	};
+
+	Frame PlaceControl(const Anchor& anchor, const Placement& placement);
+
+	struct HandInput
+	{
+		bool valid = false;
+		Vec3 position;
+		Quat orientation;
+		float squeeze = 0.0f;
+		float trigger = 0.0f;
+	};
+	struct Hands
+	{
+		std::array<HandInput, 2> hand{};
+	};
+	Hands HandsFromSnapshot(const VRInputSnapshot& snapshot);
+
+	enum class ReleaseMode
+	{
+		Latch,
+		Spring,
+		Detent,
+	};
+
+	enum class GrabMode
+	{
+		Hold,
+		Toggle,
+	};
+
+	struct GrabParams
+	{
+		float grab_radius = 0.05f;
+		float grab_length = 0.12f;
+		float grab_on = 0.6f;
+		float grab_off = 0.4f;
+		GrabMode grab_mode = GrabMode::Toggle;
+		float break_away = 0.25f;
+		float idle_detent = 0.03f;
+		ReleaseMode release = ReleaseMode::Latch;
+		float spring_rate = 4.0f;
+	};
+
+	constexpr GrabParams SpringGrab()
+	{
+		GrabParams g;
+		g.release = ReleaseMode::Spring;
+		return g;
+	}
+
+	constexpr GrabParams HoldGrab()
+	{
+		GrabParams g;
+		g.grab_mode = GrabMode::Hold;
+		return g;
+	}
+
+	struct Axis1D
+	{
+		float value = 0.0f;
+		float offset = 0.0f;
+		int hand = -1;
+		bool broke_away = false;
+		bool Held() const { return hand >= 0; }
+		void Reset()
+		{
+			value = 0.0f;
+			offset = 0.0f;
+			hand = -1;
+			broke_away = false;
+		}
+	};
+
+	struct GripEdges
+	{
+		std::array<bool, 2> on{};
+	};
+
+	struct Rail
+	{
+		float lo = -1.0f;
+		float hi = 1.0f;
+		int detents = 0;
+	};
+
+	struct Reach
+	{
+		float raw = 0.0f;
+		bool in_reach = false;
+		float distance = 0.0f;
+		bool grip_edge = false;
+	};
+
+	void MarkGripEdges(const GrabParams& grab, const Hands& hands, GripEdges& st, std::array<Reach, 2>& reach);
+
+	float GripDistance(const Vec3& hand, const Vec3& grip_centre, const Vec3& grip_axis, float grip_length);
+
+	void Step1D(const GrabParams& grab, const Rail& rail, const Hands& hands, const std::array<Reach, 2>& reach,
+		float dt, Axis1D& st);
+
+	float ApplyIdleDetent(float v, float idle_detent);
+
+	float ApplyOutputFloor(float v, float deadband, float floor);
+
+	struct SlideParams
+	{
+		Vec3 rail_dir{0.0f, 0.0f, -1.0f};
+		Vec3 grip_dir{0.0f, 1.0f, 0.0f};
+		float travel = 0.12f;
+		bool one_way = false;
+		int detents = 0;
+	};
+	struct SlideState
+	{
+		Axis1D axis;
+		GripEdges grip;
+	};
+	Vec3 SlideKnobPosition(const Frame& frame, const SlideParams& p, float value);
+	void StepSlide(const Frame& frame, const SlideParams& p, const GrabParams& grab, const Hands& hands, float dt,
+		SlideState& st);
+
+	enum class RotaryGrip : u8
+	{
+		Rim,
+		Tip,
+	};
+	struct RotaryParams
+	{
+		float lock_to_lock_deg = 900.0f;
+		float rim_radius = 0.18f;
+		RotaryGrip grip = RotaryGrip::Rim;
+		bool tip_upright = false;
+		bool two_hand = true;
+		bool one_way = false;
+		int detents = 0;
+	};
+	struct RotaryState
+	{
+		Axis1D axis;
+		GripEdges grip;
+		std::array<float, 2> cont_angle{};
+		std::array<bool, 2> cont_valid{};
+		float pair_angle = 0.0f;
+		bool pair_valid = false;
+		int second_hand = -1;
+		float pair_offset = 0.0f;
+		bool second_broke_away = false;
+	};
+	void StepRotary(const Frame& frame, const RotaryParams& p, const GrabParams& grab, const Hands& hands, float dt,
+		RotaryState& st);
+
+	struct LeverParams
+	{
+		float sweep_deg = 60.0f;
+		float arm_length = 0.20f;
+		bool upright = false;
+		bool one_way = false;
+		int detents = 0;
+	};
+	using LeverState = RotaryState;
+	Frame LeverArmFrame(const Frame& control, const LeverParams& p);
+	Vec3 LeverGripPosition(const Frame& control, const LeverParams& p, float value);
+	Vec3 LeverGripAxis(const Frame& control, const LeverParams& p, float value);
+	void StepLever(const Frame& control, const LeverParams& p, const GrabParams& grab, const Hands& hands, float dt,
+		LeverState& st);
+
+	struct GimbalParams
+	{
+		float travel_x = 0.10f;
+		float travel_y = 0.10f;
+		bool twist = false;
+		float twist_range_deg = 60.0f;
+	};
+	struct GimbalState
+	{
+		Axis1D x, y, twist;
+		GripEdges grip;
+		int hand = -1;
+		Quat grab_orientation;
+		float cont_twist = 0.0f;
+		bool cont_twist_valid = false;
+	};
+	Vec3 GimbalKnobPosition(const Frame& frame, const GimbalParams& p, const GimbalState& st);
+	void StepGimbal(const Frame& frame, const GimbalParams& p, const GrabParams& grab, const Hands& hands, float dt,
+		GimbalState& st);
+
+	struct SelectorParams
+	{
+		Vec3 rail_dir{0.0f, 0.0f, -1.0f};
+		Vec3 grip_dir{0.0f, 1.0f, 0.0f};
+		int positions = 6;
+		float travel = 0.10f;
+		float hysteresis = 0.15f;
+		bool on_arc = false;
+		LeverParams arc;
+	};
+	struct SelectorState
+	{
+		int index = 0;
+		float offset = 0.0f;
+		int hand = -1;
+		bool shifted_up = false;
+		bool shifted_down = false;
+		bool broke_away = false;
+		GripEdges grip;
+		void Reset()
+		{
+			index = 0;
+			offset = 0.0f;
+			hand = -1;
+			shifted_up = shifted_down = false;
+			broke_away = false;
+			grip = {};
+		}
+	};
+	Vec3 SelectorKnobPosition(const Frame& frame, const SelectorParams& p, int index);
+	void StepSelector(const Frame& frame, const SelectorParams& p, const GrabParams& grab, const Hands& hands,
+		float dt, SelectorState& st);
+
+	static constexpr float kResetChordHoldSeconds = 0.5f;
+	struct ChordState
+	{
+		float held_s = 0.0f;
+		bool fired = false;
+	};
+	bool StepResetChord(bool left_click, bool right_click, float dt, float hold_s, ChordState& st);
+
+	struct HapticCue
+	{
+		float amplitude;
+		float seconds;
+	};
+	static constexpr HapticCue kHapticGrab{0.5f, 0.03f};
+	static constexpr HapticCue kHapticRelease{0.3f, 0.02f};
+	static constexpr HapticCue kHapticRailHit{1.0f, 0.06f};
+	static constexpr HapticCue kHapticBreakAway{0.8f, 0.10f};
+	static constexpr HapticCue kHapticZoneEnter{0.25f, 0.02f};
+
+	enum class DeviceKind : u8
+	{
+		Throttle,
+		TwinThrottles,
+		Wheel,
+		Shifter,
+		Stick,
+		LightGun,
+		Gamepad,
+		Zone,
+		Count,
+	};
+
+	enum class ControlId : u32
+	{
+		LeftLever,
+		RightLever,
+		Power,
+		Steer,
+		GrabbedLeft,
+		GrabbedRight,
+		Throttle,
+		Grabbed,
+		Notch1,
+		Notch2,
+		Notch3,
+		Notch4,
+		Notch5,
+		Notch6,
+		Notch7,
+		Notch8,
+		Steering,
+		Gear1,
+		Gear2,
+		Gear3,
+		Gear4,
+		Gear5,
+		Gear6,
+		GearR,
+		GearN,
+		ShiftUp,
+		ShiftDown,
+		X,
+		Y,
+		Twist,
+		Trigger,
+		PointerX,
+		PointerY,
+		OnScreen,
+		A,
+		B,
+		ButtonA,
+		ButtonB,
+		ButtonX,
+		ButtonY,
+		Menu,
+		LeftStickClick,
+		RightStickClick,
+		LeftTrigger,
+		RightTrigger,
+		LeftGrip,
+		RightGrip,
+		LeftStickX,
+		LeftStickY,
+		RightStickX,
+		RightStickY,
+		Pressed,
+		LeftTriggerPress,
+		RightTriggerPress,
+		LeftGripPress,
+		RightGripPress,
+		DpadUp,
+		DpadDown,
+		DpadLeft,
+		DpadRight,
+		LeftBumper,
+		RightBumper,
+		View,
+		RightStickUp,
+		RightStickDown,
+		Count,
+	};
+	static constexpr u32 kControlCount = static_cast<u32>(ControlId::Count);
+	static constexpr int kMaxNotches = 8;
+
+	enum class ControlType : u8
+	{
+		Axis,
+		UnitAxis,
+		Button,
+	};
+
+	struct ControlDef
+	{
+		ControlId id;
+		const char* name;
+		ControlType type;
+	};
+
+	struct DeviceDef
+	{
+		DeviceKind kind;
+		const char* name;
+		std::span<const ControlDef> controls;
+	};
+
+	std::span<const DeviceDef> Catalogue();
+	ControlType ControlTypeOf(ControlId id);
+	const DeviceDef* FindDevice(std::string_view name);
+	const DeviceDef* FindDevice(DeviceKind kind);
+	const ControlDef* FindControl(const DeviceDef& device, std::string_view name);
+	const ControlDef* FindControl(const DeviceDef& device, ControlId id);
+	const char* ControlName(ControlId id);
+	std::optional<ControlId> ParseControlId(std::string_view name);
+	const char* DeviceName(DeviceKind kind);
+
+	using ControlValues = std::array<float, kControlCount>;
+
+	enum class PowerMode : u8
+	{
+		Sum,
+		Max,
+	};
+
+	enum class TwinMode : u8
+	{
+		Composed,
+		Direct,
+	};
+
+	struct TwinThrottlesParams
+	{
+		LeverParams lever;
+		GrabParams grab;
+		float lever_spacing = 0.50f;
+		PowerMode power = PowerMode::Sum;
+		float steer_full_lock = 1.0f;
+		float steer_deadband = 0.05f;
+		float steer_curve = 1.0f;
+		float steer_sign = 1.0f;
+		float output_floor = 0.0f;
+		float engage = 0.0f;
+		float engage_hysteresis = 0.05f;
+		TwinMode mode = TwinMode::Composed;
+		float lever_sign = 1.0f;
+	};
+	struct TwinThrottlesState
+	{
+		LeverState left, right;
+		bool engaged = false;
+		void Reset()
+		{
+			left = LeverState{};
+			right = LeverState{};
+			engaged = false;
+		}
+	};
+	Frame LeverFrame(const Frame& control, const TwinThrottlesParams& p, int side );
+	void StepTwinThrottles(const Frame& frame, const TwinThrottlesParams& p, const Hands& hands, float dt,
+		TwinThrottlesState& st);
+	float TwinThrottlesPower(float left, float right, const TwinThrottlesParams& p);
+	float TwinThrottlesSteer(float left, float right, const TwinThrottlesParams& p);
+	float TwinThrottlesLeverOutput(float lever, const TwinThrottlesParams& p);
+	bool TwinThrottlesEngage(float power, const TwinThrottlesParams& p, bool engaged);
+	ControlValues ComposeTwinThrottles(const TwinThrottlesParams& p, const TwinThrottlesState& st);
+
+	struct ThrottleParams
+	{
+		LeverParams lever;
+		GrabParams grab;
+		int detented = 0;
+	};
+	struct ThrottleState
+	{
+		LeverState lever;
+		SelectorState notch;
+		void Reset()
+		{
+			lever = LeverState{};
+			notch.Reset();
+		}
+	};
+	void StepThrottle(const Frame& frame, const ThrottleParams& p, const Hands& hands, float dt, ThrottleState& st);
+	ControlValues ComposeThrottle(const ThrottleParams& p, const ThrottleState& st);
+
+	struct WheelParams
+	{
+		RotaryParams rim;
+		GrabParams grab = SpringGrab();
+	};
+	struct WheelState
+	{
+		RotaryState rotary;
+		void Reset() { rotary = RotaryState{}; }
+	};
+	void StepWheel(const Frame& frame, const WheelParams& p, const Hands& hands, float dt, WheelState& st);
+	ControlValues ComposeWheel(const WheelParams& p, const WheelState& st);
+
+	struct ShifterParams
+	{
+		SelectorParams gate;
+		GrabParams grab = HoldGrab();
+		int gears = 6;
+		bool has_reverse = true;
+		bool has_neutral = true;
+	};
+	struct ShifterState
+	{
+		SelectorState sel;
+		void Reset() { sel.Reset(); }
+	};
+	int ShifterPositions(const ShifterParams& p);
+	void StepShifter(const Frame& frame, const ShifterParams& p, const Hands& hands, float dt, ShifterState& st);
+	ControlValues ComposeShifter(const ShifterParams& p, const ShifterState& st);
+
+	struct StickParams
+	{
+		GimbalParams gimbal;
+		GrabParams grab = SpringGrab();
+	};
+	struct StickState
+	{
+		GimbalState gimbal;
+		void Reset() { gimbal = GimbalState{}; }
+	};
+	void StepStick(const Frame& frame, const StickParams& p, const Hands& hands, float dt, StickState& st);
+	ControlValues ComposeStick(const StickParams& p, const StickState& st, const Hands& hands);
+
+	struct LightGunParams
+	{
+		int aim_hand = VRInputSnapshot::RIGHT;
+	};
+	ControlValues ComposeLightGun(const LightGunParams& p, const Hands& hands);
+
+	// Gamepad: the controllers' own buttons, triggers, grips and sticks, passed straight
+	// through so a profile can bind them onto the PS2 pad. Stick Y is +1 pushed forward.
+	// Triggers and grips also come as *Press buttons, pressed past half travel, for binding
+	// to a digital PS2 button without a resting finger pressing it. ButtonX, ButtonY and Menu
+	// read either hand (left on Touch, right on the Steam Frame); the D-pad, bumpers and View
+	// exist only on gamepad-shaped controllers such as the Steam Frame and stay 0 elsewhere.
+	//
+	// RightStickUp / RightStickDown are flicks of the raw right stick straight up or down (past 0.75, at
+	// least twice as far up as sideways; released below 0.4), held at least 0.12 s so a 30 fps game sees a
+	// quick flick. A first-person profile turns with that stick and passes only these to the game.
+	//
+	// sprint_latch: running without holding a button, for games that run while one is held with the stick
+	// pushed (Outbreak: Cross). Clicking the left stick while it is pushed past half turns the latch on; it
+	// stays on while the stick is pushed past a quarter and drops once the stick has been centred for
+	// 0.15 s, or at once while SetSprintBlocked says so. While on, the latch control reads pressed (ORed
+	// into it, so a tap of the control's own button can't release it) and LeftStickClick reads 0.
+	// ControlId::Count (the default) turns it off, leaving every other output as before.
+	//
+	// Menu mode (SetMenuMode: the camera driver's pauseWhen is hit, so the item screen, map or a menu is up):
+	// the raw right stick drives the D-pad, so one controller can work every menu. The dominant axis engages
+	// past 0.6 and lets go below 0.35; engaging presses that D-pad direction for 0.10 s, and holding repeats
+	// after 0.40 s, then every 0.15 s. Changing direction needs a release first. The presses are ORed into
+	// DpadUp/Down/Left/Right (stick Y +1 = Up), and the flicks read 0 meanwhile.
+	//
+	// Menu pointer (VR::MenuPointer steering the game's own cursor to the cell the controller points at): in menu mode
+	// the direction SetPointerDpad gives is ORed into DpadUp/Down/Left/Right the same way. While SetPointerConfirmHold
+	// is set, the controls bound to the game's confirm (RightTriggerPress, RightTrigger and ButtonA) read 0, so a
+	// confirm pulled before the cursor has arrived reaches the game only once it has, or never. Nothing is ever pressed
+	// for the player: only the D-pad is added, and the confirm is only ever held back.
+	struct GamepadParams
+	{
+		ControlId sprint_latch = ControlId::Count;
+	};
+	struct GamepadState
+	{
+		// Breaking free of a grab (ApplyGrabBreakout): the shake detector, the press schedule and this poll's buzz.
+		GrabBreakout::State breakout;
+		bool sprint = false;
+		float centred_s = 0.0f;
+		bool click_prev = false;
+		bool flick_up = false;
+		bool flick_down = false;
+		float flick_up_s = 0.0f; // how long each flick has been pressed, for the minimum press
+		float flick_down_s = 0.0f;
+		// Menu mode: the engaged direction (0 up, 1 down, 2 left, 3 right; -1 none, -2 waiting for the stick
+		// to centre after menu mode came on), how long it has been engaged, how long since the current press
+		// began, how long since it was let go, and whether a press is on.
+		int menu_dir = -1;
+		float menu_held_s = 0.0f;
+		float menu_press_s = 0.0f;
+		float menu_gap_s = 0.0f;
+		bool menu_pressing = false;
+		void Reset()
+		{
+			breakout.Reset();
+			sprint = false;
+			centred_s = 0.0f;
+			click_prev = false;
+			flick_up = flick_down = false;
+			flick_up_s = flick_down_s = 0.0f;
+			menu_dir = -1;
+			menu_held_s = menu_press_s = menu_gap_s = 0.0f;
+			menu_pressing = false;
+		}
+	};
+	ControlValues ComposeGamepad(const VRInputSnapshot& snapshot, const GamepadParams& p, GamepadState& st, float dt);
+
+	// Breaking free of a grab (VR/GrabBreakout.h; these three are defined in GrabBreakout.cpp). The camera driver says
+	// every vsync whether the local character is held (the profile's breakout.grabbed checks on the local record, no menu
+	// up, never on obsrv) and with which tuning; ComposeGamepad applies it to every poll. Any thread.
+	void SetGrabbed(bool grabbed, const GrabBreakout::Params& params);
+
+	// The last SetGrabbed, read as not grabbed once it is more than GrabBreakout::kStaleMs old (Apply stopped running: a
+	// pause, a stall, the game gone). *params (may be null) gets the tuning it came with. Any thread.
+	bool Grabbed(GrabBreakout::Params* params = nullptr);
+
+	// One poll of the breakout onto the Gamepad's composed values v. While grabbed, out of menu mode, and a hand shaking:
+	// the left stick's X waggles (unless the player pushes it sideways at least half way themselves), and Circle (ButtonA)
+	// and Cross (ButtonB) are pressed in turn, ORed in and only onto a button the player is not holding (Circle's presses
+	// stay out while ButtonA or RightTriggerPress, also Circle, is held). st.buzz names the hands to buzz for a press begun
+	// this poll. Otherwise v is left as composed: nothing is ever pressed without the grab, and nothing after it ends.
+	void ApplyGrabBreakout(const VRInputSnapshot& snapshot, const GrabBreakout::Params& p, bool grabbed, bool menu_mode,
+		float dt, GrabBreakout::State& st, ControlValues& v);
+
+	// While a hand is given, the Gamepad device's stick on that hand (VRInputSnapshot::LEFT/RIGHT) reads 0:
+	// the camera driver is using it to move the character itself (walking while aiming), so the game must
+	// not see it. -1 = none. Any thread.
+	void SetMoveStickSuppressed(int hand);
+
+	// While set, the Gamepad's sprint latch lets go and can't latch: the camera driver says first person
+	// isn't walking (a menu, the item screen, a cutscene, the weapon raised), so a latched button must not
+	// stay held into it. Any thread.
+	void SetSprintBlocked(bool blocked);
+
+	// While set (a stop-first zone is held), the Gamepad's left stick reads 0 and its sprint latch lets go.
+	// Any thread.
+	void SetZoneStop(bool stop);
+
+	// While set (the camera driver's pauseWhen is hit: item screen, map, menus), the Gamepad's right stick
+	// drives the D-pad and its flicks read 0. Any thread.
+	void SetMenuMode(bool on);
+
+	// The last SetMenuMode: a menu is up while first person is armed. Any thread.
+	bool MenuMode();
+
+	// The menu pointer's D-pad press for the Gamepad's next compose (0 up, 1 down, 2 left, 3 right; -1 none), ORed in
+	// only in menu mode. MenuPointer::Poll sets it every input poll, before the Gamepad composes. Any thread.
+	void SetPointerDpad(int dir);
+
+	// While set, the Gamepad's RightTriggerPress, RightTrigger and ButtonA (the confirm) read 0: the menu pointer holds a
+	// confirm back while the cursor is on its way, and swallows one that must never reach the game. Any thread.
+	void SetPointerConfirmHold(bool hold);
+
+	// The Gamepad's sprint latch and ad-lib flicks on scripted input, and that without sprint_latch the
+	// click and the buttons pass through as before. False with *failed naming the first failed check.
+	bool SelfTestGamepad(const char** failed);
+
+	// Zone: a spot on the body that a hand reaches into, such as a hip holster or over the
+	// shoulder. It is placed from the head and turns with the head's yaw only, so it follows
+	// the player around but stays put when they look down at it. With require_grip the zone
+	// presses its button when the grip is squeezed inside it, and holds it until the grip
+	// opens, wherever the hand goes; a grip already closed on the way in does nothing.
+	// Without it, the zone presses while a hand is inside.
+	enum class ZoneHand : u8
+	{
+		Either,
+		Left,
+		Right,
+	};
+	struct ZoneParams
+	{
+		Placement offset; // from the head: side (+ right), height (+ up), forward (+ ahead)
+		float radius = 0.15f;
+		float exit_margin = 0.03f;
+		ZoneHand hand = ZoneHand::Either;
+		bool require_grip = true;
+		float grip_on = 0.6f;
+		float grip_off = 0.4f;
+		// For a button the game only takes standing still (Outbreak's item screen): while the zone is held the
+		// Gamepad's move stick and sprint latch are let go (SetZoneStop), and the press itself waits
+		// press_delay_s so it lands once the character has stopped.
+		bool stop_first = false;
+		float press_delay_s = 0.25f;
+	};
+	struct ZoneState
+	{
+		std::array<bool, 2> inside{};
+		std::array<bool, 2> squeezed{};
+		std::array<bool, 2> pressing{};
+		float head_yaw = 0.0f;
+		bool have_yaw = false;
+		void Reset()
+		{
+			inside = {};
+			squeezed = {};
+			pressing = {};
+		}
+	};
+	struct ZoneEvents
+	{
+		std::array<bool, 2> entered{};
+		std::array<bool, 2> pressed{};
+	};
+	// The head's position and yaw (Anchor) from the snapshot's head pose. Looking straight up
+	// or down has no yaw, so the last one is kept in st. False without a usable head pose.
+	bool HeadAnchor(const VRInputSnapshot& snapshot, ZoneState& st, Anchor* out);
+	ZoneEvents StepZone(const Anchor& head, const ZoneParams& p, const Hands& hands, ZoneState& st);
+	ControlValues ComposeZone(const ZoneState& st);
+}

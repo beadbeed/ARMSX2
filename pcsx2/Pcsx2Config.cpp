@@ -26,6 +26,11 @@
 #include <ShlObj.h>
 #endif
 
+#ifdef ENABLE_OPENXR
+#include <algorithm>
+#include <cmath>
+#endif
+
 // This macro is actually useful for about any and every possible application of C++ equality operators.
 // Stuck here because of legacy code, new code shouldn't rely on it, it's difficult to read.
 #define OpEqu(field) (field == right.field)
@@ -170,6 +175,9 @@ namespace EmuFolders
 	std::string GameSettings;
 	std::string Textures;
 	std::string InputProfiles;
+#ifdef ENABLE_OPENXR
+	std::string VRProfiles;
+#endif
 
 	static bool ShouldUsePortableMode();
 	static std::string GetPortableModePath();
@@ -2158,6 +2166,98 @@ bool Pcsx2Config::AchievementsOptions::operator!=(const AchievementsOptions& rig
 	return !this->operator==(right);
 }
 
+#ifdef ENABLE_OPENXR
+const char* Pcsx2Config::VROptions::FirstPersonFovModeNames[] = {
+	"Auto",
+	"Profile",
+	nullptr};
+
+Pcsx2Config::VROptions::VROptions() = default;
+
+void Pcsx2Config::VROptions::LoadSave(SettingsWrapper& wrap)
+{
+	SettingsWrapSection("VR");
+
+	SettingsWrapEntry(Enable);
+	SettingsWrapEntry(ScreenDistance);
+	SettingsWrapEntry(ScreenHeight);
+	SettingsWrapEntry(ScreenVerticalOffset);
+	SettingsWrapEntry(ScreenArcDeg);
+	SettingsWrapEntry(StereoMode);
+	SettingsWrapEntry(StereoUseProfile);
+	SettingsWrapEntry(StereoSeparation);
+	SettingsWrapEntry(StereoConvergence);
+	SettingsWrapEntry(HeadCamera);
+	SettingsWrapEntry(SnapTurn);
+	SettingsWrapEntry(ComfortBlink);
+	SettingsWrapEntry(LaserSight);
+	SettingsWrapEntry(MenuPointer);
+	SettingsWrapEntry(MenuTablet);
+	SettingsWrapEntry(ComfortVignette);
+	SettingsWrapEntry(VignetteStrength);
+	SettingsWrapEntry(OnlineSafe);
+	SettingsWrapEntry(PrivateCoopFirstPerson);
+	SettingsWrapEntry(NearDepthMetres);
+	SettingsWrapEntry(RollParallax);
+	SettingsWrapEntry(FirstPersonAutoStereo);
+	SettingsWrapEntry(FirstPersonStereoStrength);
+	SettingsWrapEnumEx(FirstPersonFov, "FirstPersonFov", FirstPersonFovModeNames);
+	SettingsWrapEntry(FirstPersonFovMarginDeg);
+	SettingsWrapEntry(EdgeFill);
+	SettingsWrapEntry(Brightness);
+	SettingsWrapEntry(GameRumble);
+	SettingsWrapEntry(HapticStrength);
+	SettingsWrapEntry(HeadsetRateSubmit);
+	SettingsWrapEntry(OpaqueBackground);
+	SettingsWrapEntry(HandsDisplayRate);
+	SettingsWrapEntry(XrSeatRuntimeDirs);
+	SettingsWrapEntry(XrSeatRuntimeJsons);
+
+	if (wrap.IsLoading())
+	{
+		ScreenDistance = std::clamp(ScreenDistance, 0.5f, 10.0f);
+		ScreenHeight = std::clamp(ScreenHeight, 0.3f, 6.0f);
+		ScreenVerticalOffset = std::clamp(ScreenVerticalOffset, -2.0f, 2.0f);
+		ScreenArcDeg = std::clamp(ScreenArcDeg, 0.0f, 270.0f);
+		StereoSeparation = std::clamp(StereoSeparation, 0.0f, 0.1f);
+		StereoConvergence = std::clamp(StereoConvergence, 0.0f, 200.0f);
+		if (!std::isfinite(NearDepthMetres))
+			NearDepthMetres = 0.0f;
+		else if (NearDepthMetres > 0.0f)
+			NearDepthMetres = std::clamp(NearDepthMetres, 0.45f, 1.5f);
+		FirstPersonStereoStrength = std::isfinite(FirstPersonStereoStrength) ?
+		                                std::clamp(FirstPersonStereoStrength, MIN_FP_STEREO_STRENGTH, MAX_FP_STEREO_STRENGTH) :
+		                                1.0f;
+		FirstPersonFovMarginDeg = std::isfinite(FirstPersonFovMarginDeg) ?
+		                              std::clamp(FirstPersonFovMarginDeg, MIN_FP_FOV_MARGIN_DEG, MAX_FP_FOV_MARGIN_DEG) :
+		                              DEFAULT_FP_FOV_MARGIN_DEG;
+		Brightness = std::clamp(Brightness, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+		HapticStrength = std::clamp(HapticStrength, 0.0f, 1.0f);
+		VignetteStrength = std::isfinite(VignetteStrength) ?
+		                       std::clamp(VignetteStrength, MIN_VIGNETTE_STRENGTH, MAX_VIGNETTE_STRENGTH) :
+		                       DEFAULT_VIGNETTE_STRENGTH;
+	}
+}
+
+bool Pcsx2Config::VROptions::operator==(const VROptions& right) const
+{
+	// SnapTurn, ComfortBlink, LaserSight, MenuPointer, MenuTablet, ComfortVignette, VignetteStrength, OnlineSafe,
+	// FirstPersonAutoStereo, FirstPersonStereoStrength, FirstPersonFov, FirstPersonFovMarginDeg, Brightness, GameRumble
+	// and HapticStrength are read from EmuConfig every vsync (EdgeFill when VR starts); leaving them out keeps a
+	// settings tweak from rebuilding (and so re-announcing) every VR control.
+	return OpEqu(Enable) && OpEqu(ScreenDistance) && OpEqu(ScreenHeight) &&
+	       OpEqu(ScreenVerticalOffset) &&
+	       OpEqu(ScreenArcDeg) && OpEqu(StereoMode) && OpEqu(StereoUseProfile) &&
+	       OpEqu(StereoSeparation) && OpEqu(StereoConvergence) &&
+	       OpEqu(HeadCamera);
+}
+
+bool Pcsx2Config::VROptions::operator!=(const VROptions& right) const
+{
+	return !this->operator==(right);
+}
+#endif
+
 Pcsx2Config::Pcsx2Config()
 {
 	bitset = 0;
@@ -2239,6 +2339,10 @@ void Pcsx2Config::LoadSaveCore(SettingsWrapper& wrap)
 
 	Achievements.LoadSave(wrap);
 	Arcade.LoadSave(wrap);
+
+#ifdef ENABLE_OPENXR
+	VR.LoadSave(wrap);
+#endif
 
 	SettingsWrapEntry(GzipIsoIndexTemplate);
 	SettingsWrapEntry(PINESlot);
@@ -2550,6 +2654,9 @@ void EmuFolders::SetDefaults(SettingsInterface& si)
 	si.SetStringValue("Folders", "InputProfiles", "inputprofiles");
 	si.SetStringValue("Folders", "DebuggerLayouts", "debuggerlayouts");
 	si.SetStringValue("Folders", "DebuggerSettings", "debuggersettings");
+#ifdef ENABLE_OPENXR
+	si.SetStringValue("Folders", "VRProfiles", "vrprofiles");
+#endif
 }
 
 static std::string LoadPathFromSettings(SettingsInterface& si, const std::string& root, const char* name, const char* def)
@@ -2577,6 +2684,9 @@ void EmuFolders::LoadConfig(SettingsInterface& si)
 	InputProfiles = LoadPathFromSettings(si, DataRoot, "InputProfiles", "inputprofiles");
 	DebuggerLayouts = LoadPathFromSettings(si, Settings, "DebuggerLayouts", "debuggerlayouts");
 	DebuggerSettings = LoadPathFromSettings(si, Settings, "DebuggerSettings", "debuggersettings");
+#ifdef ENABLE_OPENXR
+	VRProfiles = LoadPathFromSettings(si, DataRoot, "VRProfiles", "vrprofiles");
+#endif
 
 	Console.WriteLn("BIOS Directory: %s", Bios.c_str());
 	Console.WriteLn("Snapshots Directory: %s", Snapshots.c_str());
@@ -2594,6 +2704,9 @@ void EmuFolders::LoadConfig(SettingsInterface& si)
 	Console.WriteLn("Input Profile Directory: %s", InputProfiles.c_str());
 	Console.WriteLn("Debugger Layouts Directory: %s", DebuggerLayouts.c_str());
 	Console.WriteLn("Debugger Settings Directory: %s", DebuggerSettings.c_str());
+#ifdef ENABLE_OPENXR
+	Console.WriteLn("VR Profiles Directory: %s", VRProfiles.c_str());
+#endif
 }
 
 bool EmuFolders::EnsureFoldersExist()
@@ -2614,6 +2727,9 @@ bool EmuFolders::EnsureFoldersExist()
 	result = FileSystem::CreateDirectoryPath(InputProfiles.c_str(), false) && result;
 	result = FileSystem::CreateDirectoryPath(DebuggerLayouts.c_str(), false) && result;
 	result = FileSystem::CreateDirectoryPath(DebuggerSettings.c_str(), false) && result;
+#ifdef ENABLE_OPENXR
+	result = FileSystem::CreateDirectoryPath(VRProfiles.c_str(), false) && result;
+#endif
 
 #ifdef __ANDROID__
 	// Android's MediaScanner indexes image files (PNG/DDS replacement textures

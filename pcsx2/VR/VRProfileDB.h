@@ -1,0 +1,792 @@
+// SPDX-FileCopyrightText: 2026 Patrick Carey <patrickfcarey@gmail.com>
+// SPDX-License-Identifier: GPL-3.0
+
+#pragma once
+
+#include "common/Pcsx2Defs.h"
+
+#include "VR/GrabBreakout.h"
+#include "VR/SpatialControls.h"
+
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace VR::ProfileDB
+{
+	enum class Tier
+	{
+		Screen,
+		Stereo,
+		Immersive,
+	};
+
+	enum class UvDrawPolicy
+	{
+		Screen,
+		World,
+	};
+
+	enum class StereoMap : u32
+	{
+		Linear = 0,
+		Bands = 1,
+		Log = 2,
+	};
+
+	struct StereoBand
+	{
+		float conv = 0.0f;
+		float sep = 0.0f;
+	};
+
+	struct StereoLogParams
+	{
+		float w0 = 1.0f;
+		float w1 = 1.0f;
+		float dfar = 0.0f;
+	};
+
+	struct StereoResolvedMap
+	{
+		StereoMap map = StereoMap::Linear;
+		u32 band_count = 1;
+		float split_q[3] = {};
+		float conv[4] = {};
+		float sep[4] = {};
+		float bias[4] = {};
+		float log_w0 = 0.0f;
+		float log_w1 = 0.0f;
+		float log_dfar = 0.0f;
+	};
+
+	u32 SelectBand(const StereoResolvedMap& map, float q);
+
+	float EvalBand(const StereoResolvedMap& map, u32 band, float q);
+
+	float EvalDisparity(const StereoResolvedMap& map, float separation, float convergence, float q);
+
+	struct StereoSceneRule
+	{
+		u32 ee_address = 0;
+		u32 equals = 0;
+		u8 width = 4;
+		std::optional<float> separation;
+		std::optional<float> convergence;
+
+		std::optional<StereoResolvedMap> map_override;
+
+		std::string label;
+	};
+
+	struct CollimateRule
+	{
+		s8 prim = -1;
+		s8 tme = 1;
+		s8 abe = -1;
+		s32 min_w = 0;
+		s32 max_w = 0;
+		s32 min_h = 0;
+		s32 max_h = 0;
+		float rx0 = 0.0f, ry0 = 0.0f, rx1 = 0.0f, ry1 = 0.0f;
+		float tu0 = 0.0f, tv0 = 0.0f, tu1 = 0.0f, tv1 = 0.0f;
+		std::string label;
+	};
+
+	static constexpr u32 kMaxCollimateRules = 4;
+
+	struct HudCollimate
+	{
+		float disparity = 0.0f;
+		std::vector<CollimateRule> rules;
+	};
+
+	struct StereoParams
+	{
+		float separation = 0.0f;
+		float convergence = 0.0f;
+		UvDrawPolicy uv_draws = UvDrawPolicy::Screen;
+
+		bool pin_uniform_q = false;
+
+		bool z_driven_depth = false;
+
+		std::vector<StereoSceneRule> scenes;
+
+		// stereo.firstPerson: used instead of the base/scene values while camera.lookAt drives the camera
+		// (the head-locked first-person screen needs different separation/convergence than the world one).
+		std::optional<float> fp_separation;
+		std::optional<float> fp_convergence;
+		// stereo.firstPerson.nearest (metres, 0.45-1.5): true near depth reaches down to this distance
+		// instead of flattening at the convergence plane.
+		std::optional<float> fp_nearest;
+		// stereo.firstPerson.auto: derive separation and convergence from the headset IPD and the first-person
+		// screen as placed ([VR] FirstPersonAutoStereo); separation and convergence above are then the fallback.
+		bool fp_auto = false;
+		// stereo.firstPerson.ndcWidthRatio (0.5-2.0, default 1.0): how much wider the first-person draws' NDC is
+		// than the displayed picture; the auto separation is divided by it so far content still lands one IPD apart.
+		float fp_ndc_width_ratio = 1.0f;
+
+		std::optional<HudCollimate> hud_collimate;
+
+		StereoMap map = StereoMap::Linear;
+		std::vector<float> splits;
+		std::vector<StereoBand> bands;
+		std::optional<StereoLogParams> log_params;
+
+		StereoResolvedMap resolved;
+	};
+
+	enum class CameraEncoding
+	{
+		F32,
+		S16_12,
+		S32Angle,
+	};
+
+	enum class CameraSource
+	{
+		Constant,
+		HeadYaw,
+		HeadPitch,
+		HeadRoll,
+		HeadX,
+		HeadY,
+		HeadZ,
+	};
+
+	enum class CameraCompose
+	{
+		Absolute,
+		Delta,
+		Anchored,
+	};
+
+	enum class CameraWrap
+	{
+		None,
+		Deg360,
+	};
+
+	struct CameraGuard
+	{
+		u32 ee_address = 0;
+		u32 equals = 0;
+		u8 width = 4;
+		bool not_equals = false;
+		bool is_chain = false;
+		u32 pointer_addr = 0;
+		std::vector<s32> deref_offsets;
+		s32 offset = 0;
+	};
+
+	struct CameraWriteOp
+	{
+		u32 ee_address = 0;
+		bool relative = false;
+		CameraEncoding encoding = CameraEncoding::F32;
+		CameraSource source = CameraSource::Constant;
+		CameraCompose compose = CameraCompose::Absolute;
+		CameraWrap wrap = CameraWrap::None;
+		float scale = 1.0f;
+		float bias = 0.0f;
+		float clamp_min = -std::numeric_limits<float>::infinity();
+		float clamp_max = std::numeric_limits<float>::infinity();
+		float axis_sign = 1.0f;
+		bool anchor_head = true;
+		std::vector<CameraGuard> when;
+	};
+
+	enum class MatrixComposeOrder
+	{
+		Pre,
+		Post,
+	};
+
+	struct CameraMatrixOp
+	{
+		u32 ee_address = 0;
+		bool relative = false;
+		bool anchored = false;
+		MatrixComposeOrder order = MatrixComposeOrder::Pre;
+		bool also_transpose = false;
+		u32 transpose_address = 0;
+		float axis_sign_yaw = 1.0f;
+		float axis_sign_pitch = 1.0f;
+		float axis_sign_roll = 1.0f;
+		std::vector<CameraGuard> when;
+	};
+
+	struct CameraFov
+	{
+		u32 ee_address = 0;
+		CameraEncoding encoding = CameraEncoding::F32;
+		float scale = 1.0f;
+	};
+
+	// A value at the camera base (e.g. the local character record) + offset; all checks of a list must hold.
+	struct RecordCheck
+	{
+		s64 offset = 0;
+		u32 equals = 0;
+		u8 width = 1;
+		bool not_equals = false;
+		// min/max instead of equals: holds while min <= value <= max.
+		bool has_range = false;
+		u32 min = 0;
+		u32 max = 0;
+	};
+
+	struct CameraBase
+	{
+		std::vector<u8> pattern;
+		std::vector<u8> mask;
+		u32 scan_start = 0x00100000;
+		u32 scan_end = 0x02000000;
+		bool is_pointer = false;
+		u32 pointer_addr = 0;
+		std::vector<s32> deref_offsets;
+		bool is_indexed = false;
+		u32 indexed_base = 0;
+		s64 array_offset = 0;
+		u32 index_addr = 0;
+		u8 index_width = 1;
+		u32 stride = 0;
+		s64 base_offset = 0;
+		bool has_validate = false;
+		s64 validate_offset = 0;
+		u32 validate_equals = 0;
+		// Indexed bases only: the index must be below count (0 = no limit), the byte at base + id_offset must equal
+		// the index (the game's own local-player test), and every check must hold, or first person writes nothing.
+		u32 count = 0;
+		bool has_id_offset = false;
+		s64 id_offset = 0;
+		std::vector<RecordCheck> checks;
+	};
+
+	struct CameraSilence
+	{
+		u32 ee_address = 0;
+		u32 value_on = 0;
+		u32 value_off = 0;
+		// Optional: only patch/restore while these pass (e.g. the overlay holding the code is resident).
+		std::vector<CameraGuard> when;
+		// Optional: only patched while these pass too (e.g. the weapon is raised). While they fail, a word we
+		// patched is put back at once, so the game's own code runs again.
+		std::vector<RecordCheck> active_when;
+		// Never patched while online-safe (the VR setting, or the network adapter on); a patched word is put back.
+		bool offline_only = false;
+		// Only while first person runs in private co-op (CameraDriver's NetMode::PrivateCoop), e.g. patches that
+		// change what the game sends to partners.
+		bool coop_only = false;
+	};
+
+	struct CameraCodeHook
+	{
+		bool enabled = false;
+		u32 hook_address = 0;
+		u32 cave_address = 0;
+		u32 scratch_address = 0;
+		u32 tail_jump_address = 0;
+		CameraSource source = CameraSource::HeadYaw;
+		float scale = 1.0f;
+		float axis_sign = 1.0f;
+		u8 target_fpr = 13;
+		u8 scratch_fpr = 1;
+		u8 addr_gpr = 1;
+	};
+
+	struct CameraPadLook
+	{
+		float max_look_deg = 90.0f;
+		float engage_deg = 12.0f;
+		float curve = 1.0f;
+		bool latch = false;
+
+		float release_deg = 4.0f;
+
+		float stick_floor = 0.0f;
+	};
+
+	// First-person look-at camera for games whose renderer builds its view from an eye and a
+	// target vector (e.g. Outbreak). Each vsync: eye = character position (read at base +
+	// position_offset) + eye height + head translation; target = eye + distance * forward, where
+	// forward's yaw is the character's heading plus head yaw and its pitch is head pitch.
+	struct CameraLookAt
+	{
+		u32 eye_address = 0;
+		u32 target_address = 0;
+		s64 position_offset = 0;
+		bool has_heading = false;
+		s64 heading_offset = 0;
+		float eye_height = 160.0f;
+		float eye_forward = 0.0f;
+		float distance = 100.0f;
+		float units_per_meter = 0.0f;
+		float yaw_sign = 1.0f;
+		float pitch_sign = 1.0f;
+		u32 roll_address = 0;
+		float roll_sign = 1.0f;
+		std::vector<CameraGuard> when;
+
+		// Camera yaw anchor: the camera keeps its own yaw (taken from the heading whenever the camera
+		// arms or recenters, then turned by snap turns) instead of following the heading every vsync.
+		// Needed when the game's movement is camera-relative: following the heading feeds back, the
+		// character turns toward where the head looks and the camera turns further.
+		bool yaw_anchor = false;
+		float snap_turn_deg = 0.0f;
+		s8 snap_stick_hand = 1; // VRInputSnapshot hand whose thumbstick X snap-turns; -1 = none
+
+		// Point-to-aim (needs yaw_anchor): while the stance value at base + aim_stance_offset equals
+		// aim_stance_equals, the heading is written so the character faces where the aim hand points.
+		bool has_aim = false;
+		s64 aim_stance_offset = 0;
+		u32 aim_stance_equals = 0;
+		u8 aim_stance_width = 1;
+		s8 aim_hand = 1;
+		bool has_aim_pitch = false;
+		s64 aim_pitch_offset = 0; // s16 binary angle (0x10000 = 360 deg)
+		float aim_pitch_sign = 1.0f;
+		float aim_pitch_clamp = 8192.0f; // s16 units
+		// Walk while aiming: while the weapon is raised, this hand's stick moves the character directly
+		// (game units per second, 0 = off) and is kept from the game, which would turn and tilt the aim.
+		float aim_move_speed = 0.0f;
+		s8 aim_move_hand = 0;
+
+		// Smooth turning on the turn stick, degrees per second at full deflection (needs yaw_anchor).
+		// Used unless the VR SnapTurn setting is on or this is 0; then snap_turn_deg applies.
+		float smooth_turn_deg_s = 0.0f;
+
+		// Write the camera for when its frame is on screen (0 = off). While above 0, a smooth stick turn is
+		// rendered ahead by the measured frame latency (needs view_matrix_address to measure it), so
+		// the turn's leading edge shows no black band; heading, aim and walking keep the true yaw. The
+		// value itself is the damping for head prediction (0-1).
+		float predict = 0.0f;
+
+		// While these all pass (a menu, the map, pause), the camera holds its last view, the head no
+		// longer steers it and first person counts as inactive, so the world screen is shown.
+		std::vector<CameraGuard> pause_when;
+
+		// Body follows view: while every check holds (standing idle, stick centred), the heading is
+		// written to the camera yaw, so picking up and checking things faces where the player looks.
+		std::vector<RecordCheck> body_follow;
+
+		// Any one of these holding (the character grabbed, down, dead) hands the camera back to the game for
+		// as long as it holds: its own shot of the struggle on the world screen beats a view from inside a
+		// head pinned in place.
+		std::vector<RecordCheck> release_when;
+
+		// Values held while first person is active (e.g. a camera-focus byte so the near-camera cull
+		// hides the local body) and put back when it ends, if the game has not changed them since.
+		struct Hold
+		{
+			u32 address = 0;
+			u8 width = 4;
+			u32 value = 0;
+			// The value to put back when the one found already equals ours (a savestate made while held).
+			bool has_restore = false;
+			u32 restore = 0;
+			// Put back the value read from this address instead of the one saved (e.g. the local player slot
+			// for a camera-focus byte), whatever was there when first person took over. 0 = unused.
+			u32 restore_from = 0;
+			// Only held (and put back) while these pass, e.g. the overlay holding the data is resident.
+			std::vector<CameraGuard> when;
+		};
+		std::vector<Hold> holds;
+
+		// The game's view matrix (4x4 f32, row vectors: look = -column 2, eye = -row 3 * R^T). Matching
+		// it against recent writes tells which head pose each displayed frame was rendered from.
+		u32 view_matrix_address = 0;
+		// Which matched frame is on screen at a vsync: the newest matched view matrix minus this many
+		// (1 = the game builds its next view right after a flip, while the last frame is displayed).
+		u32 sync_frames_back = 1;
+	};
+
+	struct CameraProfile
+	{
+		std::vector<CameraWriteOp> writes;
+		std::vector<CameraMatrixOp> matrix_writes;
+		std::optional<CameraFov> fov;
+		std::optional<CameraBase> base;
+		std::vector<CameraGuard> guards;
+		std::vector<CameraSilence> silence;
+		std::vector<CameraCodeHook> code_hooks;
+		std::optional<CameraPadLook> pad_look;
+		std::optional<CameraLookAt> look_at;
+		// Stay armed until the guards have failed this many vsyncs in a row, so a guard byte the game
+		// flips for a frame inside its own update doesn't hand the camera back for a frame.
+		u32 disarm_after_vsyncs = 0;
+		// u8 the game sets to 1 while it is in network play (Outbreak File #1 0x3065C2). Read every vsync to
+		// tell online from offline even when the network adapter setting can't (the setting is per emulator).
+		std::optional<u32> network_flag;
+	};
+
+	struct SpatialControlSpec
+	{
+		std::string device;
+		SpatialControls::DeviceKind kind = SpatialControls::DeviceKind::Count;
+		std::string id;
+		struct
+		{
+			float side = 0.0f;
+			float height = 0.0f;
+			float forward = 0.0f;
+			float yaw_deg = 0.0f;
+		} placement;
+		float travel = 0.12f;
+		float sweep_deg = 60.0f;
+		float arm_length = 0.20f;
+		bool upright = false;
+		float grab_radius = 0.05f;
+		float grab_length = 0.12f;
+		SpatialControls::GrabMode grab_mode = SpatialControls::GrabMode::Toggle;
+		float break_away = 0.25f;
+		SpatialControls::ReleaseMode release = SpatialControls::ReleaseMode::Latch;
+		float spring_rate = 4.0f;
+		bool one_way = false;
+		int detented = 0;
+		SpatialControls::PowerMode power = SpatialControls::PowerMode::Sum;
+		float engage = 0.0f;
+		SpatialControls::TwinMode mode = SpatialControls::TwinMode::Composed;
+		float lever_sign = 1.0f;
+		float steer_full_lock = 1.0f;
+		float steer_deadband = 0.05f;
+		float steer_curve = 1.0f;
+		float steer_sign = 1.0f;
+		float output_floor = 0.0f;
+		float lock_to_lock_deg = 900.0f;
+		float rim_radius = 0.18f;
+		int gears = 6;
+		bool has_reverse = true;
+		bool has_neutral = true;
+		float travel_x = 0.10f;
+		float travel_y = 0.10f;
+		bool twist = false;
+		float twist_range_deg = 60.0f;
+		bool rifle = false;
+		bool aim_left = false;
+		float zone_radius = 0.15f;
+		SpatialControls::ZoneHand zone_hand = SpatialControls::ZoneHand::Either;
+		bool zone_require_grip = true;
+		bool zone_stop_first = false;
+		float zone_press_delay = 0.25f;
+		// Gamepad params sprintLatch: the button the left-stick-click running latch holds (Count = none).
+		SpatialControls::ControlId sprint_latch = SpatialControls::ControlId::Count;
+		std::string preset;
+		std::vector<CameraGuard> when;
+		struct Bind
+		{
+			std::string control;
+			std::string target;
+		};
+		std::vector<Bind> bind;
+		u32 pad_port = 0;
+		int usb_port = -1;
+	};
+
+	struct SplitParams
+	{
+		enum class Layout : u8
+		{
+			Horizontal,
+			Vertical,
+		};
+		enum class Mode : u8
+		{
+			Focus,
+			Duo,
+			Mirror,
+			Local,
+		};
+		struct Probe
+		{
+			u32 ee_address = 0;
+			u32 threshold = 0;
+			bool at_least = false;
+			u8 width = 4;
+		};
+		struct Rect
+		{
+			float x = 0.0f, y = 0.0f, w = 1.0f, h = 1.0f;
+		};
+
+		Layout layout = Layout::Horizontal;
+		u8 views = 2;
+		u8 local_view = 0;
+		u8 local_pad_port = 0;
+		Rect rects[2];
+		bool rects_explicit = false;
+		std::optional<Probe> active;
+		Mode mode = Mode::Focus;
+		float side_scale = 0.4f;
+		float side_angle_deg = 35.0f;
+		bool stereo_on = true;
+	};
+
+	// presentation: a headset-only lift through the ShadeBoost shader (1.0 = neutral) for games whose dark
+	// rooms are unreadable on a headset's LCD. Never applied without a running VR session.
+	struct PresentationParams
+	{
+		float gamma = 1.0f;
+		float brightness = 1.0f;
+		// Only while camera.lookAt drives the camera, so menus and the item screen keep their own levels.
+		bool first_person_only = true;
+	};
+
+	// feedback: controller haptics from game memory (reads only) plus the game's own rumble. The cues
+	// run only while first person is armed with camera.base resolved (the local character record).
+	struct FeedbackParams
+	{
+		// Forward the DualShock rumble of the VR Gamepad's pad port to both controllers (VR GameRumble).
+		bool pad_rumble = false;
+		// HP at camera.base + hurt_offset and max HP at camera.base + hurt_max_offset, unsigned, hurt_width
+		// bytes. A drop pulses both hands, harder and longer the bigger it is.
+		bool has_hurt = false;
+		u32 hurt_offset = 0;
+		u32 hurt_max_offset = 0;
+		u8 hurt_width = 2;
+		// A shot counter at an absolute address: a rise of 1-5 kicks the aim hand; bigger jumps are resets.
+		bool has_fire = false;
+		u32 fire_address = 0;
+		u8 fire_width = 2;
+		s8 fire_hand = -1; // 0 left, 1 right, -1 camera.lookAt's aim hand (right without one)
+		// The equipped weapon: the u8 at camera.base + weapon_equipped_offset is an item record index (0 = none)
+		// into weapon_table (weapon_stride bytes each). A record counts only when it is present (+0 == 1), names
+		// itself (+2 == the index) and its u8 owner is the local slot + 1. Its u16 count dropping while the u8
+		// stance at camera.base + weapon_stance_offset equals weapon_stance_raised is a shot (unless the u8 action
+		// is weapon_reload_action); a rise is a reload. Also decides whether the headset shows a pistol.
+		bool has_weapon = false;
+		u32 weapon_equipped_offset = 0;
+		u32 weapon_table = 0;
+		u32 weapon_stride = 60;
+		u32 weapon_id_offset = 0x06;
+		u32 weapon_count_offset = 0x24;
+		u32 weapon_owner_offset = 0x28;
+		u32 weapon_stance_offset = 0x08;
+		u32 weapon_stance_raised = 2;
+		bool has_weapon_reload = false;
+		u32 weapon_action_offset = 0;
+		u32 weapon_reload_action = 0;
+		// Heartbeat in the left hand while HP is below danger_below * max (needs hurt).
+		bool has_danger = false;
+		float danger_below = 0.25f;
+	};
+
+	// hud.wrist: a card on the back of the left wrist while first person is active (VR only), with the
+	// character's condition, an HP bar and the virus gauge. Reads only. Offsets are into the record
+	// camera.base resolves to (the local character's in Outbreak), so it needs camera.base.
+	struct HudWristParams
+	{
+		// HP and max HP, unsigned, hp_width bytes.
+		bool has_hp = false;
+		u32 hp_offset = 0;
+		u32 hp_max_offset = 0;
+		u8 hp_width = 2;
+		// Virus: a u32 counter in the record over a u32 per-character maximum, from a table at an absolute
+		// address indexed by the u8 character id in the record.
+		bool has_virus = false;
+		u32 virus_offset = 0;
+		u32 virus_max_table = 0;
+		u32 virus_char_offset = 0;
+		// Bleeding while the value here is non-zero, bleed_width bytes.
+		bool has_bleed = false;
+		u32 bleed_offset = 0;
+		u8 bleed_width = 2;
+	};
+
+	// hud: in-headset cards drawn by the compositor.
+	struct HudParams
+	{
+		std::optional<HudWristParams> wrist;
+	};
+
+	// menuPointer: point-and-click menus (VR::MenuPointer). One cell of the game's menu grid: the game's cursor struct
+	// reads node, index, x and y while the cursor is on it (all four must match, or point-to-select stops for that
+	// opening of the menu), and rect is where it shows, in fractions of the game picture.
+	struct MenuPointerCell
+	{
+		u32 node = 0;
+		u16 index = 0;
+		u16 x = 0;
+		u16 y = 0;
+		float rect[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // u0, v0, u1, v1
+		s8 next[4] = {-1, -1, -1, -1};            // the cell one D-pad press up, down, left, right leads to; -1 none
+	};
+
+	struct MenuPointerParams
+	{
+		// The menu is up (all must pass), and steering waits while any one of suspend_when passes (a submenu); with no
+		// suspend_when, a confirm that reaches the game pauses steering until Cross, a cursor move or the menu closes.
+		std::vector<CameraGuard> when;
+		std::vector<CameraGuard> suspend_when;
+		// The menu proper (optional; any one passing): `when` can also pass on another screen (a stale cursor struct
+		// under the map or pause), so with live_when the menu counts as up only once one of these has passed since the
+		// `when` guards last started passing. Empty: `when` alone.
+		std::vector<CameraGuard> live_when;
+		// The cursor struct: u32 node pointer, u16 index, u16 x, u16 y.
+		u32 node_addr = 0;
+		u32 index_addr = 0;
+		u32 x_addr = 0;
+		u32 y_addr = 0;
+		// Steering: each D-pad press is held press_vsyncs polls, then released at least gap_vsyncs; a press the cursor
+		// does not answer within settle_vsyncs, or more than max_presses presses for one cell, stops it.
+		u8 press_vsyncs = 2;
+		u8 gap_vsyncs = 2;
+		u8 settle_vsyncs = 10;
+		u8 max_presses = 6;
+		// Hovering: dwell_ms on a cell before it counts, nothing for arm_delay_ms after the menu opens, and a cell is
+		// entered only inside its rect shrunk by enter_inset of its size on each side (left again only outside it).
+		float dwell_ms = 60.0f;
+		float arm_delay_ms = 300.0f;
+		float enter_inset = 0.12f;
+		s8 hand = -1; // -1 either (right first), 0 left, 1 right
+		// Steering online too (private co-op only, where first person runs); off, it is refused while online.
+		bool coop = false;
+		std::vector<MenuPointerCell> cells; // 1 to 16
+	};
+
+	// pouches: belt pouches (VR::BeltPouches), Dungeons of Eternity style. Spots on the seated player's body, each tied to
+	// one of the game's item cells: a hand reaching into one ticks (firmer and twice while the cell holds an item); a grip
+	// squeezed there opens the item screen (through the Zone control `open` names, if it is closed) and the menu pointer
+	// steers the game's cursor to the pouch's cell (VR::MenuPointer::RequestCell). Nothing is ever confirmed for the
+	// player, and the item bytes are only read. Only while first person is armed, so never on obsrv.
+	struct Pouch
+	{
+		int cell = -1;         // the menuPointer.cells entry the cursor is steered to
+		// The u8 at camera.base + item_offset is 0 while the cell is empty, else the item's record index in the item table
+		// feedback.weapon names (which names the item: GameFeedback::ReadItemRecord).
+		bool has_item = false;
+		u32 item_offset = 0;
+		// Metres from the head as the Zone controls are placed (+ right, + up, + ahead), measured with the head upright
+		// and looking ahead.
+		float side = 0.0f;
+		float height = 0.0f;
+		float forward = 0.0f;
+		float radius = 0.065f;
+	};
+
+	enum class PouchAnchor : u8
+	{
+		// On the body: placed from the neck under the head, so looking down at a pouch does not move it, and turned to
+		// the forward the player last recentered to, so glancing at one does not swing them round.
+		Seat,
+		// As the Zone controls: from the head's position, turned with its yaw.
+		Head,
+	};
+
+	struct PouchParams
+	{
+		PouchAnchor anchor = PouchAnchor::Seat;
+		// The Zone control (its id) whose press opens the item screen. A pouch presses it the way a squeeze in that
+		// zone would (its stopFirst included). Empty: a pouch only steers an item screen that is already up.
+		std::string open;
+		SpatialControls::ZoneHand hand = SpatialControls::ZoneHand::Either;
+		// While any one passes (an item's command submenu is open), nothing is steered at all: a squeeze is refused and
+		// the menu pointer's own steering waits too.
+		std::vector<CameraGuard> suspend_when;
+		std::vector<Pouch> list; // 1 to 8
+	};
+
+	// breakout: shaking a controller breaks free of a grab (VR::GrabBreakout). The camera driver counts the local character
+	// as held while every grabbed check holds on the record camera.base finds (CameraDriver::LocalRecordAny, so first
+	// person need not be armed) and no lookAt.pauseWhen menu is up, never on obsrv; the Gamepad then presses for the player
+	// with the shake tuning while a controller is shaken.
+	struct BreakoutParams
+	{
+		std::vector<RecordCheck> grabbed; // all must hold; at least one
+		GrabBreakout::Params shake;
+	};
+
+	struct Profile
+	{
+		std::string serial;
+		std::string name;
+		std::vector<u32> crcs;
+		Tier tier = Tier::Screen;
+		std::optional<StereoParams> stereo;
+		std::optional<float> screen_distance;
+		std::optional<float> screen_height;
+		std::optional<float> screen_arc_deg;
+		std::optional<bool> screen_follow_head;
+		// screen.firstPerson: head-locked screen while camera.lookAt drives the camera (sized to the game
+		// camera's FOV); the keys above apply the rest of the time (menus, item screen, cutscenes).
+		std::optional<float> fp_screen_distance;
+		std::optional<float> fp_screen_height;
+		std::optional<float> fp_screen_arc_deg;
+		std::optional<float> fp_screen_pose_lag_ms;
+		std::optional<PresentationParams> presentation;
+		std::optional<FeedbackParams> feedback;
+		std::optional<HudParams> hud;
+		std::optional<MenuPointerParams> menu_pointer;
+		std::optional<PouchParams> pouches;
+		// screen.menu: the menu tablet's placement (VR setting MenuTablet).
+		std::optional<float> menu_screen_distance;
+		std::optional<float> menu_screen_height;
+		std::optional<float> menu_screen_drop;
+		std::optional<float> menu_screen_tilt_deg;
+		std::optional<CameraProfile> camera;
+		std::optional<SplitParams> split;
+		std::vector<SpatialControlSpec> controls;
+		std::optional<BreakoutParams> breakout;
+		std::string notes;
+	};
+
+	void EnsureLoaded();
+
+	void ReloadIfChanged();
+
+	struct LoadIssue
+	{
+		std::string file;
+		std::string message;
+	};
+
+	const std::vector<LoadIssue>& ValidateAtLaunch();
+
+	enum class StereoRail
+	{
+		Divergence,
+		FixationGap,
+	};
+
+	struct StereoRailFinding
+	{
+		StereoRail rail = StereoRail::Divergence;
+		std::string serial;
+		std::string site;
+		float arcmin = 0.0f;
+		bool from_map = false;
+		std::string message;
+	};
+
+	const std::vector<StereoRailFinding>& StereoRailFindings();
+
+	struct ProfileAdvisory
+	{
+		std::string serial;
+		std::string site;
+		std::string message;
+	};
+
+	const std::vector<ProfileAdvisory>& ProfileAdvisories();
+
+	struct Summary
+	{
+		std::string serial;
+		std::string name;
+		bool has_stereo = false;
+		bool has_camera = false;
+		float separation = 0.0f;
+		float convergence = 0.0f;
+	};
+
+	std::vector<Summary> ListProfiles();
+
+	const Profile* Lookup(const std::string_view serial, u32 crc);
+
+	void Reset();
+
+	bool SelfTestMultibandResolve();
+}

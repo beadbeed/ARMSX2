@@ -294,9 +294,12 @@ if(ENABLE_VR_STEREO)
 	# Same macro name as PenguinScreen2, whose VR hooks this port follows.
 	list(APPEND PCSX2_DEFS ENABLE_VR)
 endif()
-# ENABLE_OPENXR is not a PCSX2 define yet. So far it builds only the standalone
-# tools/frame-xrprobe. GSDeviceVK.cpp's dormant #ifdef ENABLE_OPENXR hooks include
-# VR/VRVulkanBridge.h, which arrives with the VR layer, and the define comes with it.
+if(ENABLE_OPENXR)
+	# Builds PenguinScreen2's OpenXR VR layer (pcsx2/VR) and turns on every hook into it
+	# (#ifdef ENABLE_OPENXR in the GS, VMManager, input and Qt files). Never ENABLE_VR for
+	# those hooks: ENABLE_VR is on wherever stereo is.
+	list(APPEND PCSX2_DEFS ENABLE_OPENXR)
+endif()
 
 if(WIN32)
 	add_compile_definitions(
