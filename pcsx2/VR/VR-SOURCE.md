@@ -255,8 +255,8 @@ Not done, next:
 ## Status of M2 (2026-10-12)
 
 CI ("Outbreak VR (Steam Frame build)", dispatched on `outbreak-vr-frame`): run 38225845140 on 6e69b43be9 (priorities
-1 and 2) passed: the build, the unit tests, frame-smoke, the hook audit and the hook parity check. Priorities 3-5:
-the next run (recorded here when it is done).
+1 and 2) passed: the build, the unit tests, frame-smoke, the hook audit and the hook parity check. Run 38227924321
+on 2566847c95 (all five priorities) passed the same, with the first-run ini's `SnapTurn = false` check.
 
 Done (the M2 brief's five priorities):
 
