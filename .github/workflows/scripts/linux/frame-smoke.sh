@@ -4,6 +4,8 @@
 #   1. frame-xrprobe with no OpenXR runtime, with --no-session and without: exit 0,
 #      page size 4096 and "runtime unavailable" in the log, and a Vulkan device
 #      (lavapipe), because the probe lists the devices directly without a runtime.
+#      Also with XR_RUNTIME_JSON naming a runtime library that does not exist, and
+#      with stderr into a pipe nobody reads (as when Ctrl+C ends tee over SSH).
 #   2. frame-probe.sh runs the probe and writes the launch log and the probe log.
 #   3. frame-xrprobe needs only glibc and libgcc_s, and no ELF in the AppDir needs a
 #      GLIBC_ symbol version above 2.39.
@@ -54,14 +56,16 @@ done
 # No runtime anywhere the loader looks: XR_RUNTIME_JSON and the runner's XDG
 # directories are unset, and HOME is an empty folder.
 NO_RUNTIME_ENV=(env -u XR_RUNTIME_JSON -u XDG_CONFIG_HOME -u XDG_CONFIG_DIRS -u XDG_DATA_HOME -u XDG_DATA_DIRS)
+# Extra NAME=VALUE pairs for the next run_probe (env applies them after the -u list).
+EXTRA_ENV=()
 run_probe() {
 	local name=$1
 	shift
 	local dir="$work/$name"
 	mkdir -p "$dir"
-	echo "== frame-xrprobe $* (no OpenXR runtime)"
+	echo "== frame-xrprobe $* (no OpenXR runtime${EXTRA_ENV[*]:+; ${EXTRA_ENV[*]}})"
 	set +e
-	"${NO_RUNTIME_ENV[@]}" HOME="$work/home-$name" "$probe" --log-dir "$dir" "$@" 2>"$dir/stderr.txt"
+	"${NO_RUNTIME_ENV[@]}" HOME="$work/home-$name" "${EXTRA_ENV[@]}" "$probe" --log-dir "$dir" "$@" 2>"$dir/stderr.txt"
 	local code=$?
 	set -e
 	local log
@@ -84,6 +88,44 @@ run_probe() {
 }
 run_probe no-session --no-session
 run_probe full
+
+# A manifest whose runtime library is not there: the loader finds no runtime, the probe
+# says so and still exits 0, and it marks the XR_RUNTIME_JSON file as the one in use.
+fake="$work/fake-runtime"
+mkdir -p "$fake"
+cat >"$fake/active_runtime.json" <<'EOF'
+{
+    "file_format_version": "1.0.0",
+    "runtime": { "name": "frame-smoke missing runtime", "library_path": "./libmissing-runtime.so" }
+}
+EOF
+EXTRA_ENV=("XR_RUNTIME_JSON=$fake/active_runtime.json")
+run_probe broken-manifest --no-session
+EXTRA_ENV=()
+log=$(ls "$work"/broken-manifest/probe-*.log 2>/dev/null | head -n 1 || true)
+if [ -n "$log" ]; then
+	grep -q 'XR_RUNTIME_JSON is set, so the loader uses only' "$log" || note "broken-manifest: the log does not name the XR_RUNTIME_JSON override"
+	grep -q "$fake/active_runtime.json   <- the loader uses this one" "$log" || note "broken-manifest: the override is not marked as the manifest in use"
+	grep -q 'libmissing-runtime.so: MISSING' "$log" || note "broken-manifest: the missing runtime library is not reported"
+fi
+
+# stderr into a pipe whose reader has gone, as when Ctrl+C or a dropped SSH connection
+# ends tee in frame-probe.sh: the probe must not die of SIGPIPE, and its log must end.
+echo "== frame-xrprobe --no-session with stderr into a pipe nobody reads"
+dir="$work/closed-pipe"
+mkdir -p "$dir"
+set +e
+"${NO_RUNTIME_ENV[@]}" HOME="$work/home-closed-pipe" "$probe" --no-session --log-dir "$dir" 2>&1 | true
+code=${PIPESTATUS[0]}
+set -e
+[ "$code" -eq 0 ] || note "closed-pipe: exit code $code, expected 0 (141 would be SIGPIPE)"
+log=$(ls "$dir"/probe-*.log 2>/dev/null | head -n 1 || true)
+if [ -n "$log" ]; then
+	grep -q 'frame-xrprobe finished, exit code 0' "$log" || note "closed-pipe: the log lacks the finish line"
+	tail -n 3 "$log"
+else
+	note "closed-pipe: the probe wrote no log"
+fi
 
 echo "== frame-probe.sh --no-session (no OpenXR runtime)"
 home="$work/home-script"
