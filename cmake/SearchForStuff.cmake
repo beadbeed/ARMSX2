@@ -187,6 +187,24 @@ if(USE_VULKAN)
 	add_subdirectory(3rdparty/vulkan EXCLUDE_FROM_ALL)
 endif()
 
+if(ENABLE_OPENXR)
+	# Vendored OpenXR SDK (Khronos 1.1.61, copied unchanged from PenguinScreen2),
+	# built as a static loader: the same block as PenguinScreen2's SearchForStuff.cmake.
+	set(DYNAMIC_LOADER OFF CACHE BOOL "Build the OpenXR loader as a shared library" FORCE)
+	set(BUILD_LOADER ON CACHE BOOL "Build the OpenXR loader" FORCE)
+	set(BUILD_API_LAYERS OFF CACHE BOOL "Build OpenXR API layers" FORCE)
+	set(BUILD_TESTS OFF CACHE BOOL "Build OpenXR tests" FORCE)
+	set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "Build OpenXR conformance tests" FORCE)
+	set(BUILD_SDK_TESTS OFF CACHE BOOL "Build OpenXR SDK samples" FORCE)
+	add_subdirectory(3rdparty/openxr EXCLUDE_FROM_ALL)
+	if(NOT MSVC)
+		# The loader's ABI shields (XRLOADER_ABI_TRY/CATCH) require exceptions;
+		# re-enable them for this target only, overriding PCSX2's global
+		# -fno-exceptions/-fno-rtti (last flag wins on GCC/Clang).
+		target_compile_options(openxr_loader PRIVATE -fexceptions -frtti)
+	endif()
+endif()
+
 add_subdirectory(3rdparty/cubeb EXCLUDE_FROM_ALL)
 disable_compiler_warnings_for_target(cubeb)
 disable_compiler_warnings_for_target(speex)
