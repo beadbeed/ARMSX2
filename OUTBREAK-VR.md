@@ -15,7 +15,7 @@ This repo holds code only. No game files, BIOS or saves are ever committed here.
 
 Branch `outbreak-vr-frame` adds `frame-xrprobe` (`tools/frame-xrprobe`), a small test program that runs on
 the Frame by itself. It needs no BIOS, disc or save. With the headset on for about two minutes, it answers
-the SteamVR questions the rest of M0 depends on. The VR layer itself is not in this branch yet.
+the SteamVR questions the rest of M0 depends on. The VR layer came in the second slice (below).
 
 **Build.** The "Outbreak VR (Steam Frame build)" workflow builds with `-DENABLE_OPENXR=ON`; every other build
 leaves it off and is unchanged. Besides the AppImage, it uploads the artifact **`outbreak-vr-frame-<sha>`**.
@@ -58,3 +58,30 @@ everything printed, including the OpenXR loader's own messages. Send both back, 
   vkQueueSubmit, xrEndFrame).
 - It exits cleanly: one session per instance, torn down in the same order as PenguinScreen2
   (SteamVR-for-Linux #989).
+
+## Steam Frame: the VR layer (M0, second slice)
+
+Branch `outbreak-vr-frame` now also builds PenguinScreen2's OpenXR VR layer into ARMSX2 (`pcsx2/VR`, copied from
+PenguinScreen2 c2c5ee2; `pcsx2/VR/VR-SOURCE.md` lists every copied file, every local edit and every hook site).
+Only the Steam Frame build turns it on (`ENABLE_OPENXR`); every other ARMSX2 build is unchanged, and
+`tools/outbreak-vr/hook-audit.sh` checks that every hook in a shared file is under `#ifdef ENABLE_OPENXR`.
+
+**What it adds.** Launched with `--vr`, ARMSX2 opens an OpenXR session on the Frame's SteamVR, shows the game on
+a fixed flat screen about 2 m ahead, and reads the Frame controllers as the pad through the game's VR profile
+(`bin/resources/vr-profiles`, Outbreak File #1 and #2). No first-person camera and no stereo yet: that is M1.
+`-vr-info` prints the OpenXR runtime report and exits. The bundle (`outbreak-vr-frame-<sha>.tar.zst`) now also
+holds `launch-outbreak-vr.sh`, the game's devkit Start Command.
+
+**How Alex launches it** (step by step in `frame/README-FRAME.md`): copy the BIOS to `~/.config/ARMSX2/bios` and
+the disc image under `~` yourself (never through GitHub or a cloud service), put the image's path in
+`~/armsx2-vr/game.txt`, then run `./launch-outbreak-vr.sh` in the extracted folder (or make it the devkit
+title's Start Command, title name `outbreak_vr`). The first run writes a headset ini: no setup wizard, Vulkan at
+1x, MTVU, VR on, head camera and stereo off. Logs go to `~/armsx2-vr/logs`.
+
+**What to check:** the game appears on a flat screen that stays put when you turn your head, the title screen
+comes up, the Frame controllers work the menus and move the character, the speed stays at 95% or more for
+5 minutes in a room, and quitting returns to SteamVR without a crash. Run `frame-probe.sh` first.
+
+**CI.** Besides the probe checks, the `frame-smoke` job now runs `AppRun -vr-info` with no display and no runtime
+(the version line and "No OpenXR runtime is available"), checks the VR profiles are in the AppDir, runs the
+launcher with no game (first-run ini written, exit 2), and runs the hook audit.
