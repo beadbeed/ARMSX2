@@ -165,6 +165,8 @@ if [[ "${FRAME_BUNDLE:-}" == "1" ]]; then
 		echo "Qt's offscreen platform plugin is not in $DEPSDIR; the bundle goes without it."
 	fi
 	install -m 644 "$PCSX2DIR/frame/README-FRAME.md" "$OUTDIR/README-FRAME.md"
+	# The PINE client the research and test tools use (python3 tools/pine.py on the Frame, over SSH).
+	install -D -m 644 "$PCSX2DIR/tools/outbreak-vr/pine.py" "$OUTDIR/tools/pine.py"
 
 	FRAME_NAME="outbreak-vr-frame-$(git -C "$PCSX2DIR" rev-parse --short=10 HEAD)"
 	echo "Packing $FRAME_NAME.tar.zst..."

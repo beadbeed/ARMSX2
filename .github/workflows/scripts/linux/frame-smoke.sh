@@ -45,7 +45,7 @@ echo "Bundle: $archive ($(du -h "$archive" | cut -f1)) -> $appdir"
 echo "== Layout"
 for f in AppRun usr/bin/armsx2-qt usr/bin/frame-xrprobe frame-probe.sh launch-outbreak-vr.sh README-FRAME.md \
 	usr/bin/resources/vr-profiles/SLPM-65428.yaml usr/bin/resources/vr-profiles/SLPM-65692.yaml \
-	usr/plugins/platforms/libqoffscreen.so; do
+	usr/plugins/platforms/libqoffscreen.so tools/pine.py; do
 	if [ -e "$appdir/$f" ]; then
 		echo "ok   $f"
 	else
@@ -293,6 +293,7 @@ if python3 tools/outbreak-vr/pine-transport-test.py; then
 else
 	note "pine-transport-test.py failed"
 fi
+cmp -s tools/outbreak-vr/pine.py "$appdir/tools/pine.py" || note "the bundle's tools/pine.py is not tools/outbreak-vr/pine.py"
 
 echo "== bash -n"
 for s in frame/*.sh "$appdir/frame-probe.sh" "$appdir/launch-outbreak-vr.sh" .github/workflows/scripts/linux/frame-smoke.sh \

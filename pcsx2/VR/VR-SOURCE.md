@@ -22,6 +22,13 @@ Unchanged copies of PenguinScreen2 c2c5ee2 (39,362 lines of C++ in total):
 - `bin/resources/vr-profiles/`: `SLPM-65428.yaml`, `SLPM-65692.yaml` (Outbreak File #1 and #2), `SLUS-20090.yaml`,
   `SLUS-20851.yaml`, `SLUS-20919.yaml`, `README.md`, `LICENSE.md`.
 
+Copied in M3, with the local edits listed below:
+
+- `pcsx2-qt/Settings/VRSettingsWidget.cpp`, `.h` and `.ui` (c2c5ee2): the Qt VR settings page. Built only with
+  `ENABLE_OPENXR` (`pcsx2-qt/CMakeLists.txt`), so hook-audit treats it as part of the VR layer.
+- `tools/outbreak-vr/pine.py` (PenguinScreen2 2ecc16b, the same file as at c2c5ee2): the PINE client the research and
+  test tools use. Only its transport is ARMSX2's.
+
 Not copied, on purpose:
 
 - `pcsx2/VR/StereoState.h` and `.cpp`: ARMSX2 already had these (its stereo renderer uses them on every platform).
@@ -51,6 +58,26 @@ Every change made here to a file copied from PenguinScreen2, to be ported back:
 
 Every M1 edit in XRCompositor.cpp is marked with a comment that starts `ARMSX2 (Steam Frame M1)`.
 
+M3's edits to the copied files, each marked with a comment that starts `ARMSX2 (Steam Frame M3)`:
+
+| File | Line | What | Why |
+|---|---|---|---|
+| `pcsx2/VR/XRSession.cpp` | 40, 280, 621 | `s_max_layer_count` from `xrGetSystemProperties`, the `(VR) Runtime limits: maxLayerCount ...` line at every session start, and `XRSession::MaxLayerCount()` | the layer budget. **Port back.** |
+| `pcsx2/VR/XRSession.h` | 47 | `MaxLayerCount()` | same |
+| `pcsx2/VR/XRSession.cpp` | 237 | the cylinder line says a curved screen is shown as a flat quad when the runtime has no cylinder layers | the fallback was silent. **Port back.** |
+| `pcsx2/VR/XRCompositor.cpp` | 163 | the drop order (`kRank*`, `HudCardRank`) and the budget's state (`s_layer_budget` and the drop counters) | the layer budget. **Port back.** |
+| `pcsx2/VR/XRCompositor.cpp` | 247 | `PublishedSet::Entry::rank` | same |
+| `pcsx2/VR/XRCompositor.cpp` | 4190, 4215, 4226, 4239 | `FillPublishedSet` gives each entry its rank | same |
+| `pcsx2/VR/XRCompositor.cpp` | 4489, 4536, 4568 | `FitLayerBudget`, `NoteLayerBudgetDrop` (the `(VR) Layer budget:` warning) and `BuildSubmitArray` deciding what goes before it builds the array (both the pacer and the legacy path end their frames through it) | same |
+| `pcsx2/VR/XRCompositor.cpp` | 6088 | `Initialize`: the budget is `min(maxLayerCount, kLayerCapacity + 1)`; the `(VR) Layer budget:` and `(VR) Screens:` lines | same |
+| `pcsx2/VR/XRCompositor.cpp` | 6542 | `(VR) Screen: a N degree curve is asked for, but the runtime has no cylinder layers ...`, once per session | the fallback was silent. **Port back.** |
+| `pcsx2-qt/Settings/VRSettingsWidget.cpp` | 143 | Edge Fill's recommended value says Unchecked | `[VR] EdgeFill` defaults to false (Config.h). **Port back** (PenguinScreen2's text says Checked). |
+| `pcsx2-qt/Settings/VRSettingsWidget.cpp` | 237 | the status banner names `launch-outbreak-vr.sh` | the Frame's launcher; PenguinScreen2 names its own script, so nothing to port back. |
+| `tools/outbreak-vr/pine.py` | 1-19, 62-95, 127, 439, 450-456, 491 | the transport: `unix_socket_path`, `endpoint` (TCP on Windows, `$XDG_RUNTIME_DIR/pcsx2.sock` on Linux, `PINE_SOCKET`, `PINE_TCP`, `PINE_HOST`), `Pine(slot, host, timeout, path)`, `wait_for_pine`, and the offline check's ini (ARMSX2's off Windows) | PINE on Linux is a Unix socket. **Port back**: PenguinScreen2's own tools then work against a Linux build, and nothing changes on Windows. |
+
+With 16 or more layers (the OpenXR minimum, and what SteamVR offers) the layer budget drops nothing, so the compositor
+submits exactly what it did.
+
 **M2 made no edit to the copied files.** Its changes are all in shared ARMSX2 files (hook table below). A few of them
 differ from PenguinScreen2 on purpose, and are worth porting back:
 
@@ -61,8 +88,8 @@ differ from PenguinScreen2 on purpose, and are worth porting back:
 | `pcsx2/Hotkeys.cpp` | 51 | the target-speed lock is in `HotkeyAdjustTargetSpeed`, not in the IncreaseSpeed and DecreaseSpeed hotkeys | an `#ifdef` inside a `DEFINE_HOTKEY(...)` argument is a directive inside macro arguments, which is not portable, so the per-hotkey guards are not ported. VMManager refuses the limiter, frame advance and state hotkeys itself, with its own message. |
 | `pcsx2/Hotkeys.cpp` | 173 | `CanPause` refuses online only while the VM is running | a VM paused before the adapter was switched on can still be resumed with the hotkey. **Port back.** |
 | `pcsx2-qt/MainWindow.cpp` | 118 | `PauseLockedOnline` asks `VMManager::IsOnlineLocked()` | so `PCSX2_TEST_ONLINE_LOCKS=1` also covers the Qt pause buttons (PenguinScreen2 reads `DEV9.EthEnable`). **Port back.** |
-| `pcsx2/PINE.cpp` | 1528, 1551 | `MsgSaveState` and `MsgLoadState` refuse through `VMManager::IsOnlineLocked()` | same reason |
-| `pcsx2/PINE.cpp` | 1161 | `MsgVRMemWatch` logs once that watches never report a hit | no ARMSX2 EE recompiler has the MemWatch hit hook (see the iR5900 row) |
+| `pcsx2/PINE.cpp` | 1532, 1555 | `MsgSaveState` and `MsgLoadState` refuse through `VMManager::IsOnlineLocked()` | same reason |
+| `pcsx2/PINE.cpp` | 1165 | `MsgVRMemWatch` logs once that watches never report a hit | no ARMSX2 EE recompiler has the MemWatch hit hook (see the iR5900 row) |
 
 **clang 17 fixes: none were needed.** The first CI build with the whole VR layer (run 38212330071, clang 17,
 libstdc++ 14, ubuntu-24.04-arm) compiled and linked every copied file as it is, so nothing has to be ported back
@@ -82,11 +109,12 @@ What the VR layer needs from the rest of the emulator that ARMSX2 did not have:
 | `pcsx2/Input/InputManager.h/.cpp` | `InputSourceType::VR` and its name `"VR"` (on by default), the VRInputSource registration, the VR binding overlay (`SetVRBindingOverlay`, `GetVRBindingOverlay`, `HasVRBindingOverlay`) merged into the pad and USB bindings, and the rumble hooks (`GameFeedback::OnPadRumble`, `PauseRumble`). |
 | `cmake/BuildParameters.cmake` | `ENABLE_OPENXR` joins `PCSX2_DEFS`. |
 | `pcsx2/CMakeLists.txt` | `pcsx2VRSources`/`pcsx2VRHeaders` (PenguinScreen2's lists without StereoState), outside the LTO list; `openxr_loader` linked into `PCSX2_FLAGS`; `VR/XRSession.cpp` and `VR/SeatSession.cpp` with `-fexceptions` and no precompiled header. |
+| `pcsx2-qt/CMakeLists.txt` | M3: `Settings/VRSettingsWidget.*` only `if(ENABLE_OPENXR)`, as PenguinScreen2 does with `ENABLE_VR`. |
 
 ## Hook sites
 
 PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef ENABLE_OPENXR` lines on
-`outbreak-vr-frame` after M2.
+`outbreak-vr-frame` after M3.
 
 | Where | PenguinScreen2 | ARMSX2 | Status |
 |---|---|---|---|
@@ -143,7 +171,7 @@ PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef 
 | QtHost: help text for `--vr` and `-vr-info` | 2148 | 2139 | M0, done (`--vr-seat` and `--vr-cast` left out) |
 | QtHost: `--vr` / `-vr`, `-vr-info` | 2196 | 2185 | M0, done. `--vr-seat`, `--vr-cast` and `--qhist-live` are not ported. |
 | QtHost: `ProfileDB::ValidateAtLaunch` dialog | 2527 | 2501 | M0, done; each issue is also written to the log, because on the Frame the dialog may open where nobody sees it |
-| SettingsWindow: the VR settings page (VRSettingsWidget) | SettingsWindow.cpp 25, 201 | none | M5 |
+| SettingsWindow: the VR settings page (VRSettingsWidget) | SettingsWindow.cpp 25, 201 | SettingsWindow.cpp 25, 207 | M3, done (after Achievements, as in PenguinScreen2) |
 | PadDualshock2: includes (PadLook, SplitState) | PadDualshock2.cpp 15 | PadDualshock2.cpp 15 | M2, done |
 | PadDualshock2: pad 1's buttons through `PadLook::ProbeButtons`, the L1+R1+L3+R3 recenter chord | 205, 210 | 218 | M2, done |
 | PadDualshock2: right stick X through `PadLook::ApplyRx` (not in split-screen), the stick and Cross/Square pressure probes | 262-310 | 282, 294, 300, 309, 327, 333 | M2, done |
@@ -152,8 +180,9 @@ PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef 
 | Hotkeys: VRRecenterHead, VRBrightnessUp, VRBrightnessDown | 198 | 217 | M2, done |
 | Hotkeys: online locks (`OnlineLocked`, slot load and save, `CanPause`, target speed) | 118-157, and in 12 hotkeys | 34, 51, 141, 162, 173 | M2, done in the functions; the per-hotkey guards are not ported (see the local edits) |
 | PINE: includes, the 0xE0-0xE5 enum values, `ReadF32` and `ReadPose` | PINE.cpp 11, 149, 205 | PINE.cpp 17, 242, 352 | M2, done |
-| PINE: MsgVRQhistFlush, MsgVRMemWatch, MsgVRMemWatchPoll, MsgVRFakeInput, MsgVRTelemetry, MsgVRMenuPointer | 552 | 1076 | M2, done, copied as it is (plus the MemWatch note). ARMSX2's own commands (0x10-0x15, MsgPadSet 0x30) are unchanged. MsgVRQhistFlush is refused until `--qhist-live` is ported. |
-| PINE: MsgSaveState, MsgLoadState refused online | 983, 1004 | 1528, 1551 | M2, done |
+| PINE: MsgVRQhistFlush, MsgVRMemWatch, MsgVRMemWatchPoll, MsgVRFakeInput, MsgVRTelemetry, MsgVRMenuPointer | 552 | 1080 | M2, done, copied as it is (plus the MemWatch note). ARMSX2's own commands (0x10-0x15, MsgPadSet 0x30) are unchanged. MsgVRQhistFlush is refused until `--qhist-live` is ported. |
+| PINE: MsgSaveState, MsgLoadState refused online | 983, 1004 | 1532, 1555 | M2, done |
+| PINE: the Unix socket's path in the log (`PINE: Listening on ...`) | none | 781 | M3, ARMSX2's own: the Linux path logged nothing, and the tools need it |
 | GSRendererHW: includes (DepthHistogram) | 14 | 34 | M1, done |
 | GSRendererHW: Z-to-1/w fit | 25 | 39 (ENABLE_VR) | ARMSX2's own port of it, on every stereo build |
 | GSRendererHW: snapshot layer on the frame and render-target dumps | 383, 419, 4776, 4968 | 37 (`VRSnapshotLayer`), 443, 473, 5928, 6084 | M1, done |
@@ -165,7 +194,7 @@ PenguinScreen2 line numbers are at c2c5ee2; ARMSX2 line numbers are the `#ifdef 
 | iR5900 (x86): MemWatch hit hook | iR5900.cpp 19, 1479 | none | needs an arm64 memcheck; MemWatch stays inactive (PINE arms watches and logs once that they never report a hit) |
 
 `tools/outbreak-vr/hook-audit.sh` checks that every line added to a shared file since 3cf66e03aa that mentions the
-VR layer or OpenXR is under `#ifdef ENABLE_OPENXR` (ARMSX2's own stereo code under `ENABLE_VR` is exempt), and that
+VR layer or OpenXR is under `#ifdef ENABLE_OPENXR` (the copied VR settings page counts as part of the VR layer) (ARMSX2's own stereo code under `ENABLE_VR` is exempt), and that
 `ENABLE_OPENXR` still defaults to OFF. The frame-smoke CI job runs it.
 
 `tools/outbreak-vr/hook-parity.py` (M1) checks the other direction: every `#ifdef ENABLE_VR` block in a PenguinScreen2
@@ -293,10 +322,71 @@ Not done, next:
 - Nothing has run in a headset. Alex's next session on the Frame: the M1 checklist (README-FRAME.md section 3), then
   the M2 one (section 4).
 - Not ported: the per-hotkey online guards (see the local edits; VMManager covers them), the gsrunner stereo replay
-  and `--qhist-live` (GS dumps never go in CI), the VR settings page (M5), and the MemWatch hit hook (needs a memcheck
+  and `--qhist-live` (GS dumps never go in CI), the VR settings page (M5; ported in M3), and the MemWatch hit hook (needs a memcheck
   in ARMSX2's arm64 recompiler).
 - Not tested in CI: the locks themselves (no game runs in CI). To check them by hand: start a game with
   `PCSX2_TEST_ONLINE_LOCKS=1` and try pause, turbo, a state save and a state load; each is refused with a
   `(VMManager) ... refused` line.
 - M3 next: hands, the HUD, the wrist card, the menu pointer, belt pouches and brightness in the headset. Most of it is
   in the copied VR layer already; the work is checking it on the Frame.
+
+## Status of M3 (2026-10-12)
+
+CI ("Outbreak VR (Steam Frame build)", dispatched on `outbreak-vr-frame`): RUNS_M3
+
+Done (the M3 brief's five priorities):
+
+1. **Hook sites for the hands, the HUD, the menu pointer and the pouches: none were missing.** Everything that drives them
+   outside `pcsx2/VR` was ported in M0-M2, and the hook-parity check finds no PenguinScreen2 hook for them that ARMSX2
+   lacks (no PenguinScreen2 shared file calls into them outside `#ifdef ENABLE_VR`, either):
+   - `VRInputSource::PollEvents` (copied) runs `BeltPouches::Poll` and then `MenuPointer::Poll` every input poll, before
+     the controls compose. VMManager's own `InputManager::PollSources` calls it; the source is registered since M0.
+   - The per-vsync block in VMManager (M1) runs `HudCards::Poll` (the wrist card's data, the toast, the vignette and the
+     blink), and `CameraDriver::Apply` tells `HandModel` what the hands hold (`SetWeaponHeld`, from the weapon raised and
+     `GameFeedback`'s held-item class).
+   - XRCompositor (copied) draws the hands, the laser or menu beam, the menu dot, the wrist card, the toast, the vignette
+     and the blink as layers over the screen (`BuildHandLayers`, `BuildHudLayers`) at the GS present hooks of M0.
+   - The brightness hotkeys and their toast (M2), the presentation lift in GSRenderer (M0), and PINE's
+     `MsgVRMenuPointer` (0xE5: menu pointer and pouch state, the test hit; M2).
+   - The rule that only the player's trigger confirms is in the copied MenuPointer and BeltPouches and is unchanged:
+     the pointer and a pouch squeeze only steer the game's cursor with D-pad presses (`SpatialControls::SetPointerDpad`)
+     and hold a confirm back (`SetPointerConfirmHold`, swallowed until the trigger is let go) while a steer is under way;
+     the trigger or A, pulled by the player, is the only confirm.
+2. **Layer budget.** XRSession logs `maxLayerCount` at every session start, and the compositor submits at most
+   `min(maxLayerCount, 16)` layers a frame. A frame with more drops the least important first (the toast, the wrist
+   card, the lever cards, the hands, the laser, the menu dot, the vignette, the blink, then the background; the game
+   screen stays), keeps the order of the rest, and logs `(VR) Layer budget:` at the first drop and then at most every
+   10 s. OpenXR requires at least 16, so with a conformant runtime nothing is dropped. The quad fallback for a missing
+   `XR_KHR_composition_layer_cylinder` was already there (`curved = arc >= 5 && HasCylinderLayer()` at every placement);
+   it is now logged at session start (`(VR) Screens:`), in the cylinder line, and once when a screen asks for a curve.
+   The Outbreak profiles use flat screens (`arc: 0`) anyway.
+3. **Settings: the Qt VR settings page is ported** (`pcsx2-qt/Settings/VRSettingsWidget.*`, the "VR" page in Settings,
+   under `ENABLE_OPENXR`). On the Frame the Qt window is not usable from inside the headset, so `frame/README-FRAME.md`
+   also lists every `[VR]` key the Frame build reads, with its default, for editing the ini over SSH. The launcher's
+   first-run ini is unchanged.
+4. **pine.py over SSH.** `tools/outbreak-vr/pine.py` (copied, transport adapted) connects to the Linux PINE socket,
+   `$XDG_RUNTIME_DIR/pcsx2.sock` (`/tmp/pcsx2.sock` without `XDG_RUNTIME_DIR`, `.<slot>` added for a slot other than
+   28011), as `pcsx2/PINE.cpp` names it, and to TCP 127.0.0.1:<slot> on Windows. `PINE_SOCKET`, `PINE_TCP=1` and
+   `PINE_HOST` override it, so the tools run on the Frame over SSH, or on the PC through
+   `ssh -N -L 28011:/run/user/1000/pcsx2.sock steamos@frame`. PINE now logs its socket path on Linux (ENABLE_OPENXR
+   only). The launcher's `FRAME_PINE=1` (`=0`) sets `[EmuCore] EnablePINE` in an existing ini and keeps the rest, and the
+   Frame bundle carries the client as `tools/pine.py` (`appimage-qt.sh`, in its `FRAME_BUNDLE` branch only).
+   `tools/outbreak-vr/pine-transport-test.py` checks the transport against a fake PINE server; frame-smoke runs it, and
+   checks `FRAME_PINE` and the bundled copy.
+5. **Docs:** this file, the hook-parity allowlist (the SettingsWindow entry is gone), `OUTBREAK-VR.md` and
+   `frame/README-FRAME.md` (section 5, the M3 headset checklist; section 6, the settings; section 7, the tools).
+
+hook-parity at c2c5ee2: 85 PenguinScreen2 `ENABLE_VR` blocks; 60 ported, 5 ported less allowlisted parts, 20
+allowlisted (gsrunner, the DATE warning, the x86 MemWatch hook, ARMSX2's own forms), plus the 3 shader terms.
+
+Not done, next:
+
+- Nothing has run in a headset. Alex's next Frame session: the M1, M2 and M3 checklists (README-FRAME.md sections 3-5).
+- The self-tests (`PCSX2_VR_SELFTEST=1`, `PCSX2_VR_HUD_SELFTEST=1`) run only with a game and its profile loaded (the
+  menu pointer, the pouches and the HUD poll only then), so CI cannot run them; README-FRAME section 5 has Alex run them
+  once on the Frame. `PCSX2_VR_FEEDBACK_SELFTEST` skips itself while VR controller input runs, so it cannot run there.
+- The other research and test tools (`menutest.py`, `vrtest.py`, `grabtest.py` and the rest) are not copied: copy them
+  from PenguinScreen2 when needed; they import `pine.py` and need no change for the transport. Some assume the Windows
+  test PC's paths and PowerShell launchers.
+- M4: performance and heat (refresh rate, resolution sweep, thread pinning, Valve's perf CSV). M5: packaging, keeping
+  the two copies of `pcsx2/VR` in step (port the local edits above back), and optional co-op.

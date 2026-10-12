@@ -1,4 +1,4 @@
-# Steam Frame: frame-xrprobe and Outbreak VR (M0, M1 and M2)
+# Steam Frame: frame-xrprobe and Outbreak VR (M0 to M3)
 
 This folder holds two things for the Steam Frame:
 
@@ -10,8 +10,11 @@ This folder holds two things for the Steam Frame:
   - **M1 (the default):** first person. In a room, the game camera is the character's eyes and turns
     with your head, and both eyes get their own picture, so the room has depth. Menus, doors and cutscenes go
     back to a flat screen.
-  - **M2 (this build):** the PC build's controls and safety rules on top of M1: smooth turn, recenter, the grab
-    breakout, haptics, and the online locks (no pause, speed change or savestate while the network adapter is on).
+  - **M2:** the PC build's controls and safety rules on top of M1: smooth turn, recenter, the grab breakout, haptics,
+    and the online locks (no pause, speed change or savestate while the network adapter is on).
+  - **M3 (this build):** the PC build's first-person presentation on top of M2: hands that hold the equipped weapon,
+    the laser sight, the wrist card, menus you point at, belt pouches, the comfort blink and vignette, and the headset
+    brightness.
   - **M0** (`FRAME_VIEW=flat`): the game on a fixed flat screen about 2 m in front of you.
 
   Run the probe first: if the probe fails, the game will too, and the probe log says why.
@@ -173,11 +176,153 @@ or save a state. Pausing, turbo or a savestate is refused with a message, and th
 `(VMManager) ... refused: the network adapter is on` line. Before going online, you can try this offline: launch with
 `PCSX2_TEST_ONLINE_LOCKS=1` in front of the command.
 
+## 5. Hands, HUD, menus and pouches (M3)
+
+Play offline (Single Play, network adapter off), seated, with both Frame controllers on before launching. The same launch
+as section 3.
+
+**First, once: the self-tests** (a few minutes). Over SSH:
+
+    cd ~/outbreak-vr/outbreak-vr-frame-<sha>
+    PCSX2_VR_SELFTEST=1 PCSX2_VR_HUD_SELFTEST=1 ./launch-outbreak-vr.sh
+
+They run once a game with its VR profile is loaded (load a save and walk into a room), then quit. The launch log must
+have `(VR) MenuPointer self-test: passed`, `(VR) BeltPouches self-test: passed`, `(VR) Item names self-test: passed`
+and `(VR) HUD self-test: 0 failure(s)`. Any `FAIL` line: send the log and stop here. (The haptics self-test,
+`PCSX2_VR_FEEDBACK_SELFTEST`, runs only without a headset session, so it skips itself here.)
+
+Then launch normally, load a save in File #1 or File #2, walk into a room in first person, and check:
+
+1. **The hands show the equipped weapon.** Squeeze the right grip at your right hip to raise the weapon: the right hand
+   holds what the character has equipped (a pistol, a long gun, a melee weapon, a thrown item or a spray). Equip
+   something else on the item screen and raise it again: the hand changes with it. With the weapon down, the hands are
+   empty. Does the weapon sit right in the hand? The log has `(VR) Hands: the right hand shows a ...`.
+2. **The laser is for guns only.** With a gun raised, a thin red laser runs from the muzzle along the aim and fades out
+   after a few metres. A melee weapon, a thrown item or a spray has none, and neither does a lowered weapon. Fire: does
+   the shot land where the laser points? (`[VR] LaserSight = false` turns it off.)
+3. **The wrist card names the weapon.** Turn the back of your left wrist toward your eyes, as if checking a watch: a
+   small card fades in with the character's condition, an HP bar, the virus gauge, and the equipped weapon's name and
+   rounds. It fades out when you turn the wrist away. Does the name match the item screen? Is the text sharp enough to
+   read? The log has `(VR) HUD: wrist card shown` and `(VR) HUD: wrist card live: HP ...`.
+4. **Menus: point at them, and only the trigger selects.** Open the item screen. A beam and a dot come from the right
+   hand. Point at one of the four item cells or the equipped box: the game's cursor moves there by itself, with a light
+   tick when it lands. Then check:
+   - pointing alone never selects anything, however long you rest on a cell;
+   - the trigger (or A) selects the cell the dot rests on, and a quick point-and-pull selects the cell you rested on,
+     not one the dot only crossed;
+   - push the D-pad yourself while pointing: the pointer does not undo your move;
+   - open an item's submenu: the pointer stops, and the trigger and D-pad work as usual in it.
+   The log has `(VR) MenuPointer: item screen open`, `(VR) MenuPointer: cell <a> -> <b> in <n> press(es)` and, only
+   after your own pull, `(VR) MenuPointer: confirm passed on cell <n>`.
+5. **The pouches name the item and open the item screen at that cell.** With no menu up, reach an open hand to your
+   chest: four pouches there mirror the item grid, and the belt buckle is the equipped box. Reaching into a pouch ticks
+   (twice, and firmer, when its cell holds an item), and a short message names the item. Squeeze the grip in that pouch:
+   the item screen opens with the cursor on that cell, and nothing is selected until you pull the trigger. Does the name
+   match what is in that cell? The log has `(VR) Pouches: pouch <n> (cell <n>, <item>) squeezed with the <hand> hand`.
+6. **The comfort cards.** The short messages ("Recentered", "Brightness 1.10") show ahead of you and fade. A snap turn
+   (`[VR] SnapTurn = true`) and each switch between first person and the flat screen (a door, the item screen) hide
+   behind a short fade to black (`[VR] ComfortBlink`). With `[VR] ComfortVignette = true`, the edges of the view darken
+   while you turn or walk with the stick, and clear when you stop. Is any of it distracting or too slow?
+7. **Brightness is comfortable in dark rooms.** Stand in a dark room. Can you see the walls and the floor without the
+   blacks turning grey? The Outbreak profile already lifts dark tones in first person (gamma 1.2); `[VR] Brightness`
+   (0.8 to 1.8, default 1.00) goes on top of it. To change it, quit, set it in the ini over SSH (section 6), and start
+   again; or bind the VR brightness hotkeys, which step it by 0.1 and save it. Write down the value that is comfortable
+   in a dark room and still fine in a bright one. (Shade Boost in the graphics settings must stay off: the lift is not
+   applied with it on.)
+
+It passes if 1-7 hold and the launch log has no "(VR) ... abandon" line and no `(VR) Layer budget:` warning. The
+`(VR) Runtime limits:` line should say `maxLayerCount 16` or more; with fewer, the compositor drops the least important
+layers first (the toast, the wrist card, the lever cards, the hands, the laser, the menu dot, the vignette, the blink,
+then the background) and says so in a `(VR) Layer budget:` line.
+
+The log lines that tell us what happened (all in `~/armsx2-vr/logs/launch-*.log`):
+
+- `(VR) Runtime limits:`, `(VR) Layer budget:` and `(VR) Screens:` at the start of each session: how many layers SteamVR
+  takes a frame, and whether it has curved (cylinder) layers. Without them every screen is a flat quad, which the
+  Outbreak profiles use anyway.
+- `(VR) Hands:` and `(VR) HUD:` (laser sight, wrist card, menu pointer, vignette shown), `(VR) HUD toast:` and
+  `(VR) HUD blink`.
+- `(VR) MenuPointer:` and `(VR) Pouches:`.
+- The self-test lines from the first run.
+
+## 6. Settings
+
+The Frame build reads its VR settings from section `[VR]` of `~/.config/ARMSX2/inis/PCSX2.ini`. Edit it over SSH while
+ARMSX2 is not running, so your edit and ARMSX2's own saves (the brightness hotkeys save `Brightness`, for example) do
+not cross. The same settings are on the "VR" page of ARMSX2's
+Settings window, but that window is not reachable from inside the headset. A key that is not in the ini has its
+default. The first-run ini writes only `Enable`, `HeadCamera`, `StereoMode`, `SnapTurn` and `HeadsetRateSubmit`.
+
+| Key | Default | First-run ini | What it does |
+|---|---|---|---|
+| `Enable` | false | true | VR on (the launcher's `--vr` also turns it on for that run) |
+| `HeadCamera` | true | true | the head turns the game camera (first person) |
+| `StereoMode` | true | true | both eyes get their own picture |
+| `StereoUseProfile` | true | | the game profile's stereo numbers instead of `StereoSeparation` and `StereoConvergence` |
+| `StereoSeparation` | 0.02 | | eye separation without a profile (0 to 0.1) |
+| `StereoConvergence` | 20.0 | | the depth that sits at the screen, without a profile (0 to 200) |
+| `FirstPersonAutoStereo` | true | | first-person stereo from the headset's IPD; false: the profile's fixed numbers |
+| `FirstPersonStereoStrength` | 1.0 | | how deep first person looks (0.5 to 1.5; 1.0 is life-size) |
+| `NearDepthMetres` | 0 | | how near true depth reaches: 0 the profile's (1.0 m), below 0 off, 0.45 to 1.5 that distance |
+| `RollParallax` | true | | parallax turns with head roll |
+| `FirstPersonFov` | Profile | | the game camera's field of view: `Profile`, or `Auto` (fitted to the headset; softer centre) |
+| `FirstPersonFovMarginDeg` | 6.0 | | what `Auto` adds to the headset's field of view (0 to 20) |
+| `EdgeFill` | false | | a dim blur of the picture's edges around the first-person screen instead of black |
+| `SnapTurn` | false | false | the right stick turns in 30 degree steps instead of smoothly |
+| `ComfortBlink` | true | | a short fade to black on snap turns and view switches |
+| `ComfortVignette` | false | | the view's edges darken while you turn or walk with the stick |
+| `VignetteStrength` | 0.6 | | how dark the vignette gets (0.2 to 1.0) |
+| `LaserSight` | true | | the red laser on a raised gun |
+| `MenuPointer` | true | | the menu beam, the dot and point-to-select (never selects by itself) |
+| `MenuTablet` | false | | menus on a small tilted screen in front of your chest instead of the big screen |
+| `Brightness` | 1.00 | | headset brightness on top of the profile's lift (0.8 to 1.8), in the headset only |
+| `GameRumble` | true | | the game's own rumble goes to the controllers |
+| `HapticStrength` | 1.0 | | scales the game's haptics (0 to 1; 0 is off) |
+| `OnlineSafe` | false | | turns off the first-person extras that change gameplay (walking while aiming, aim pitch); always on online except in private co-op |
+| `PrivateCoopFirstPerson` | false | | first person online, in private co-op only |
+| `ScreenDistance` | 2.0 | | the flat screen's distance in metres (0.5 to 10) |
+| `ScreenHeight` | 1.4 | | the flat screen's height in metres (0.3 to 6) |
+| `ScreenVerticalOffset` | 0.0 | | the flat screen's height offset in metres (-2 to 2) |
+| `ScreenArcDeg` | 100 | | the flat screen's curve in degrees, where the runtime has cylinder layers and the profile does not say `arc: 0` (the Outbreak profiles do) |
+| `HeadsetRateSubmit` | true | true | frames go to the headset at its own rate (the VR pacer); false: one per game frame |
+| `OpaqueBackground` | true | | a black layer behind everything, so SteamVR's room never shows |
+| `HandsDisplayRate` | true | | hands, laser and wrist card follow the controllers every display frame |
+| `DebugView` | Off | | debug only: how the desktop window shows the two eyes (`SBS`, `CrossEye`, `Left` or `Right`) |
+| `InterleaveEyes` | false | | debug only: both eyes in one target |
+| `XrSeatRuntimeDirs`, `XrSeatRuntimeJsons` | empty | | co-op seats (not used: `--vr-seat` is not in this build) |
+
+`[VR] StereoEnable`, `Separation`, `Convergence` and the other keys of ARMSX2's own stereo renderer are ignored in this
+build (the log says so). Two more switches outside `[VR]`: `[EmuCore] EnablePINE` (section 7) and `[Folders] VRProfiles`
+(default `vrprofiles`: a profile there replaces the bundled one for its game).
+
+## 7. Research and test tools over SSH (PINE)
+
+The research and test tools talk to ARMSX2 through PINE, which is off by default. Turn it on once (it stays on):
+
+    FRAME_PINE=1 ./launch-outbreak-vr.sh
+
+While a game runs, PINE listens on a Unix socket, `$XDG_RUNTIME_DIR/pcsx2.sock` (usually `/run/user/1000/pcsx2.sock`;
+the emulog's `PINE: Listening on ...` line names it). `FRAME_PINE=0` turns PINE off again. Two ways to use it:
+
+- On the Frame, over SSH: `python3 tools/pine.py` in the extracted folder prints the game's status and id and reads the
+  EE RAM, as a check. Other tools from `tools/outbreak-vr` import `pine.py` and find the socket the same way.
+- From the PC: forward a local port to the Frame's socket, then run the tools on the PC as with the PC build (TCP
+  127.0.0.1:28011 is the default on Windows):
+
+      ssh -N -L 28011:/run/user/1000/pcsx2.sock steamos@frame
+
+  The tools' offline check reads the PC's ini then, not the Frame's: set `PCSX2_INI` to a copy of the Frame's ini, or
+  only the game's own network flag is checked.
+
+Never run the tools with the network adapter on: they pause, load states and send test input, and the online locks
+refuse most of it anyway. `PINE_SOCKET=<path>`, `PINE_TCP=1` and `PINE_HOST=<host>` override where `pine.py` connects.
+
 ## Logs to send back
 
 - Probe: `~/frame-probe/probe-*.log` (the answers) and `~/frame-probe/launch-*.log` (everything printed).
 - Game: `~/armsx2-vr/logs/launch-*.log` (everything printed, including the "(VR)" lines) and
-  `~/.config/ARMSX2/logs/emulog.txt`. For M1 and M2, also your notes on the items in sections 3 and 4.
+  `~/.config/ARMSX2/logs/emulog.txt`. For M1, M2 and M3, also your notes on the items in sections 3, 4 and 5 (for M3:
+  the self-test run's launch log too, and the `[VR] Brightness` value you settled on).
 - From `~/.local/share/Steam/logs`: `xrclient_*.txt`, `vrserver.txt`, `vrcompositor.txt`.
 
 From the PC:

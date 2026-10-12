@@ -145,3 +145,32 @@ shared ARMSX2 file is under `#ifdef ENABLE_OPENXR` (details and line numbers in 
 **What to check in the headset** (step by step in `frame/README-FRAME.md`, section 4): walking, aiming and shooting,
 smooth turn, recenter (chord and the system recenter), the grab breakout, haptics, and that a controller going to sleep
 and waking up leaves nothing stuck.
+
+## Steam Frame: hands, HUD, menus and pouches (M3)
+
+Branch `outbreak-vr-frame` now has the PC build's whole first-person presentation. Most of it was already in the copied
+VR layer and needed no new hook: the hooks that drive it (the input poll, the per-vsync block, the compositor's layers at
+the GS present) came with M0-M2. What M3 adds (details and line numbers in `pcsx2/VR/VR-SOURCE.md`):
+
+- **What you see:** hands that hold the equipped weapon (pistol, long gun, melee, thrown, spray), a laser sight for guns
+  only, the wrist card on the back of the left wrist (condition, HP, virus gauge, the weapon's name and rounds), short
+  messages ahead of you, the comfort blink and the optional comfort vignette.
+- **Menus:** a beam and a dot from the right hand. Pointing at an item cell moves the game's own cursor there; only the
+  player's trigger (or A) selects, and nothing is ever selected by pointing alone.
+- **Belt pouches:** four pouches on the chest mirror the item grid and the belt buckle is the equipped box. Reaching in
+  names the item; a squeeze opens the item screen at that cell (and selects nothing).
+- **Brightness:** the profile's first-person lift plus `[VR] Brightness` (0.8 to 1.8), in the headset only.
+- **Layer budget:** the runtime's `maxLayerCount` is logged at every session start, and the compositor never submits more
+  layers than that: if the runtime takes fewer than 16, the least important go first (the toast, the wrist card, the
+  lever cards, the hands, the laser, the menu dot, the vignette, the blink, then the background). Without curved
+  (cylinder) layers, a curved screen is a flat quad, and the log says so.
+- **Settings:** the Qt "VR" settings page from PenguinScreen2; `frame/README-FRAME.md` lists every `[VR]` key with its
+  default, for editing the ini over SSH.
+- **Tools:** `tools/outbreak-vr/pine.py` reaches PINE on Linux (the Unix socket `$XDG_RUNTIME_DIR/pcsx2.sock`) as well as
+  on Windows (TCP 28011), so the research and test tools work against the Frame over SSH. The bundle carries it as
+  `tools/pine.py`, and `FRAME_PINE=1` turns PINE on.
+
+**What to check in the headset** (step by step in `frame/README-FRAME.md`, section 5): the self-tests pass once; the hands
+show the equipped weapon; the laser shows for guns only; the wrist card names the weapon; menus can be pointed at and
+selected with the trigger only; the pouches name the item and open the item screen at that cell; the brightness is
+comfortable in dark rooms.
