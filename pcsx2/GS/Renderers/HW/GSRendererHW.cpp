@@ -31,6 +31,26 @@
 #include <cmath>
 #include <cstdlib>
 #endif
+#ifdef ENABLE_OPENXR
+#include "VR/DepthHistogram.h"
+#endif
+#ifdef ENABLE_OPENXR
+namespace
+{
+	// Outbreak VR (Steam Frame), PenguinScreen2's snapshot-layer hook: with PCSX2_VR_SNAPSHOT_LAYER=1, the
+	// frame and render-target dumps of a per-eye (two-layer) target save the right eye instead of the left.
+	GSTexture* VRSnapshotLayer(GSTexture* t)
+	{
+		if (t && t->GetArrayLayers() > 1)
+		{
+			static const char* layer_env = std::getenv("PCSX2_VR_SNAPSHOT_LAYER");
+			if (layer_env && layer_env[0] == '1')
+				return t->GetLayerProxyTexture(1);
+		}
+		return t;
+	}
+}
+#endif
 #include <limits>
 
 using PS_ATST  = GSShader::PS_ATST;
@@ -420,7 +440,11 @@ GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
 
 		if (GSConfig.SaveFrame && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
 		{
+#ifdef ENABLE_OPENXR
+			VRSnapshotLayer(t)->Save(GetDrawDumpPath("%05lld_f%05lld_fr%d_%05x_%s.bmp", s_n, g_perfmon.GetFrame(), i, static_cast<int>(TEX0.TBP0), GSUtil::GetPSMName(TEX0.PSM)));
+#else
 			t->Save(GetDrawDumpPath("%05lld_f%05lld_fr%d_%05x_%s.bmp", s_n, g_perfmon.GetFrame(), i, static_cast<int>(TEX0.TBP0), GSUtil::GetPSMName(TEX0.PSM)));
+#endif
 		}
 	}
 
@@ -446,7 +470,11 @@ GSTexture* GSRendererHW::GetFeedbackOutput(float& scale)
 	scale = rt->m_scale;
 
 	if (GSConfig.SaveFrame && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
+#ifdef ENABLE_OPENXR
+		VRSnapshotLayer(t)->Save(GetDrawDumpPath("%05lld_f%05lld_fr%d_%05x_%s.bmp", s_n, g_perfmon.GetFrame(), 3, static_cast<int>(TEX0.TBP0), GSUtil::GetPSMName(TEX0.PSM)));
+#else
 		t->Save(GetDrawDumpPath("%05lld_f%05lld_fr%d_%05x_%s.bmp", s_n, g_perfmon.GetFrame(), 3, static_cast<int>(TEX0.TBP0), GSUtil::GetPSMName(TEX0.PSM)));
+#endif
 
 	return t;
 }
@@ -5897,7 +5925,11 @@ void GSRendererHW::Draw()
 			s = GetDrawDumpPath("%05lld_f%05lld_rt0_%05x_(%05x)_%s.bmp", s_n, frame, m_cached_ctx.FRAME.Block(), rt->m_TEX0.TBP0, GSUtil::GetPSMName(m_cached_ctx.FRAME.PSM));
 
 			if (rt->m_texture)
+#ifdef ENABLE_OPENXR
+				VRSnapshotLayer(rt->m_texture)->Save(s);
+#else
 				rt->m_texture->Save(s);
+#endif
 		}
 
 		if (ds && GSConfig.SaveDepth)
@@ -6049,7 +6081,11 @@ void GSRendererHW::Draw()
 		{
 			s = GetDrawDumpPath("%05lld_f%05lld_rt1_%05x_(%05x)_%s.bmp", s_n, frame, m_cached_ctx.FRAME.Block(), rt->m_TEX0.TBP0, GSUtil::GetPSMName(m_cached_ctx.FRAME.PSM));
 
+#ifdef ENABLE_OPENXR
+			VRSnapshotLayer(rt->m_texture)->Save(s);
+#else
 			rt->m_texture->Save(s);
+#endif
 		}
 
 		if (ds && GSConfig.SaveDepth)
@@ -7367,6 +7403,9 @@ void GSRendererHW::DetermineVRStereoConfig(const GSTextureCache::Target* rt, con
 	if (vr_engaged && PRIM->FST && st.collimate_disparity != 0.0f)
 	{
 		bool matched = (st.collimate_rule_count == 0);
+#ifdef ENABLE_OPENXR
+		int matched_rule = -1;
+#endif
 		const int rw = m_r.width();
 		const int rh = m_r.height();
 		for (u32 i = 0; i < st.collimate_rule_count && !matched; i++)
@@ -7399,9 +7438,40 @@ void GSRendererHW::DetermineVRStereoConfig(const GSTextureCache::Target* rt, con
 			if (r.tv1 > r.tv0 && (m_vt.m_min.t.y < r.tv0 || m_vt.m_max.t.y > r.tv1))
 				continue;
 			matched = true;
+#ifdef ENABLE_OPENXR
+			matched_rule = static_cast<int>(i);
+#endif
 		}
 		if (matched)
 			vr_collimate = st.collimate_disparity * vr_eye_sign;
+#ifdef ENABLE_OPENXR
+		// Outbreak VR (Steam Frame), from PenguinScreen2: say when the HUD collimation first matches, and
+		// warn once if the profile's rules never match (the HUD then sits at screen depth in both eyes).
+		static u64 s_coll_considered = 0;
+		static u64 s_coll_matched = 0;
+		static bool s_coll_dead_warned = false;
+		s_coll_considered++;
+		if (matched)
+		{
+			if (s_coll_matched++ == 0)
+			{
+				Console.WriteLn("(VR) HUD collimation: rule %d ('%s') FIRST MATCH after %llu FST draws - "
+								"prim=%d tme=%d abe=%d r=%d,%d-%d,%d (%dx%d) uv=%.1f,%.1f-%.1f,%.1f d=%+.4f",
+					matched_rule, (matched_rule >= 0) ? st.collimate_rules[matched_rule].label : "every FST draw",
+					static_cast<unsigned long long>(s_coll_considered),
+					static_cast<int>(m_vt.m_primclass), PRIM->TME ? 1 : 0, PRIM->ABE ? 1 : 0,
+					m_r.x, m_r.y, m_r.z, m_r.w, rw, rh,
+					m_vt.m_min.t.x, m_vt.m_min.t.y, m_vt.m_max.t.x, m_vt.m_max.t.y, vr_collimate);
+			}
+		}
+		else if (!s_coll_dead_warned && s_coll_matched == 0 && s_coll_considered > 20000)
+		{
+			s_coll_dead_warned = true;
+			Console.WarningFmt("(VR) HUD collimation: {} rule(s) authored, but NOT ONE of {} UV/FST draws has "
+							   "matched. The rule does not describe this game's symbology.",
+				st.collimate_rule_count, s_coll_considered);
+		}
+#endif
 	}
 	m_conf.cb_vs.vr_band[0].w = vr_collimate;
 
@@ -7434,6 +7504,109 @@ void GSRendererHW::DetermineVRStereoConfig(const GSTextureCache::Target* rt, con
 	m_conf.cb_vs.vr_band[1].w = vr_zq_apply ? s_vr_zqfit.a0 : 0.0f;
 	m_conf.cb_vs.vr_band[2].w = vr_zq_apply ? s_vr_zqfit.beta : 0.0f;
 	m_conf.cb_vs.vr_band[3].w = vr_zq_apply ? 1.0f : 0.0f;
+
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame), ported from PenguinScreen2's DetermineVSConfig (c2c5ee2).
+	// First person, linear map: vr_splits carries the near floor (.x) and the head-roll rotation of the
+	// parallax (.y, .z), which the linear branch of tfx.glsl reads; all zero keeps the old behaviour.
+	if (vr_engaged && st.map == VR::StereoState::Params::Map::Linear && st.first_person)
+	{
+		// Only perspective draws may go in front of the convergence plane: Z-fitted ones, or textured
+		// non-FST draws whose Q varies. Constant-Q and untextured draws never jump forward.
+		const bool vr_near_ok = vr_zq_apply || (PRIM->TME && !PRIM->FST && !m_vt.m_eq.q);
+		const float vr_floor = vr_near_ok ? st.near_floor : 0.0f;
+
+		float vr_roll_y = 0.0f;
+		float vr_roll_z = 0.0f;
+		float vr_roll = 0.0f;
+		if (VR::StereoState::RollParallaxEnabled() && VR::StereoState::HeadRoll(&vr_roll) && std::isfinite(vr_roll))
+		{
+			// Positive roll (left ear down) puts the right eye higher, so far content in the right-eye image
+			// moves up; Vulkan NDC +y points down after the flip in tfx.glsl and the right eye's sign is +1.
+			constexpr float kRollYSign = -1.0f;
+			constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+			const float abs_roll = std::abs(vr_roll);
+			const float fade = (abs_roll <= 25.0f * kDegToRad) ? 1.0f :
+			                   (abs_roll >= 40.0f * kDegToRad) ? 0.0f :
+			                                                     (40.0f * kDegToRad - abs_roll) / (15.0f * kDegToRad);
+			const float aspect = (GSConfig.AspectRatio == AspectRatioType::R16_9) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+			vr_roll_z = 1.0f - std::cos(vr_roll) * fade;
+			vr_roll_y = kRollYSign * std::sin(vr_roll) * aspect * fade;
+		}
+		m_conf.cb_vs.vr_splits = GSVector4(vr_floor, vr_roll_y, vr_roll_z, 0.0f);
+
+		static bool s_logged_fp_draw = false;
+		if (!s_logged_fp_draw)
+		{
+			s_logged_fp_draw = true;
+			Console.WriteLn("(VR) First first-person draw: separation %.4f, convergence %.4g, near floor %.3f, "
+							"roll parallax %s, Z-fitted depth %s.",
+				st.separation, st.convergence, st.near_floor, VR::StereoState::RollParallaxEnabled() ? "on" : "off",
+				vr_zq_apply ? "yes" : "no");
+		}
+	}
+
+	if (vr_zq_apply && VRZQFitVerbose()) [[unlikely]]
+	{
+		const float zhi = m_vt.m_max.p.z * 0x1p-32f;
+		const float qhi = m_vt.m_max.t.z;
+		const float qhat = s_vr_zqfit.beta * (zhi - s_vr_zqfit.a0);
+		Console.WriteLn("(VR) ZFITD prim=%d tme=%d fst=%d abcd=%u%u%u%u r=%d,%d-%d,%d nv=%u z=%.0f "
+						"q=%.6f qhat=%.6f ratio=%.4f",
+			static_cast<int>(m_vt.m_primclass), PRIM->TME ? 1 : 0, PRIM->FST ? 1 : 0,
+			static_cast<u32>(m_context->ALPHA.A), static_cast<u32>(m_context->ALPHA.B),
+			static_cast<u32>(m_context->ALPHA.C), static_cast<u32>(m_context->ALPHA.D),
+			m_r.x, m_r.y, m_r.z, m_r.w, m_vertex->next,
+			m_vt.m_max.p.z, qhi, qhat, (qhi != 0.0f) ? (qhat / qhi) : 0.0f);
+	}
+
+	if (vr_multiview_target)
+	{
+		// Separation is in the render target's NDC; orthostereo assumes that spans the displayed width
+		// (stereo.firstPerson.ndcWidthRatio otherwise). Once per process, on the first first-person draw.
+		static bool s_logged_fp_ndc = false;
+		if (!s_logged_fp_ndc && st.first_person)
+		{
+			s_logged_fp_ndc = true;
+			const float ndc_w = (m_conf.cb_vs.vertex_scale.x > 0.0f) ? (1.0f / (8.0f * m_conf.cb_vs.vertex_scale.x)) : 0.0f;
+			const GSVector2i res = PCRTCDisplays.GetResolution();
+			Console.WriteLn("(VR) First-person multiview draw: NDC spans %.0f px, display %dx%d (NDC-to-display width ratio %.3f).",
+				ndc_w, res.x, res.y, (res.x > 0) ? (ndc_w / static_cast<float>(res.x)) : 0.0f);
+		}
+	}
+	if (VR::DepthHistogramArmed()) [[unlikely]]
+	{
+		const bool qh_fst_excluded = !PRIM->TME || PRIM->FST;
+		const bool qh_stq_hazard = m_vt.m_accurate_stq && m_vt.m_primclass == GS_SPRITE_CLASS && !qh_fst_excluded;
+		const VR::DrawClass qh_class = !st.enabled ? VR::DrawClass::StereoOff :
+		                               qh_fst_excluded ? VR::DrawClass::FstExcluded :
+		                               qh_stq_hazard ? VR::DrawClass::AccurateStqFlagged :
+		                               vr_pin_screen ? VR::DrawClass::UniformQPinned :
+		                               vr_mono_centre ? VR::DrawClass::MonoCentre :
+		                                                VR::DrawClass::Displaced;
+		const GSVector4i qh_r = m_r.rintersect(m_context->scissor.in);
+		const double qh_target_area = static_cast<double>(unscaled_size.x) * static_cast<double>(unscaled_size.y);
+		const double qh_area = qh_r.rempty() ? 0.0 :
+		                                       (static_cast<double>(qh_r.width()) * static_cast<double>(qh_r.height()));
+		const double qh_qmin = static_cast<double>(m_vt.m_min.t.z);
+		const double qh_qmax = static_cast<double>(m_vt.m_max.t.z);
+		const int qh_vpp = GSUtil::GetClassVertexCount(m_vt.m_primclass);
+		double qh_density = -1.0;
+		if (qh_class == VR::DrawClass::Displaced && qh_area > 0.0)
+		{
+			const double qh_tex_w = static_cast<double>(m_vt.m_max.t.x) - static_cast<double>(m_vt.m_min.t.x);
+			const double qh_tex_h = static_cast<double>(m_vt.m_max.t.y) - static_cast<double>(m_vt.m_min.t.y);
+			const double qh_qmid = 0.5 * (qh_qmin + qh_qmax);
+			if (qh_tex_w > 0.0 && qh_tex_h > 0.0 && qh_qmid > 0.0)
+				qh_density = (qh_tex_w * qh_tex_h) / (qh_qmid * qh_qmid) / qh_area;
+		}
+		VR::DepthHistogram& qh = VR::GlobalDepthHistogram();
+		qh.NoteTargetSize(unscaled_size.x, unscaled_size.y);
+		qh.AddDraw((qh_target_area > 0.0) ? (qh_area / qh_target_area) : 0.0, qh_qmin, qh_qmax,
+			(qh_vpp > 0) ? (m_index->tail / static_cast<u32>(qh_vpp)) : 0u, m_vertex->next, qh_class,
+			qh_density);
+	}
+#endif
 }
 #endif
 

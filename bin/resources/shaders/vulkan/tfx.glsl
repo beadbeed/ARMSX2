@@ -69,7 +69,10 @@ float vr_stereo_disp(float q_in, float z_norm)
 
 	if (vr_map_mode == 0u)
 	{
-		return vr_stereo.x * max(0.0f, 1.0f - vr_stereo.y * q);
+		// First person on the Steam Frame (PenguinScreen2's near floor): vr_splits.x < 0 lets near
+		// content reach crossed disparity down to vr_splits.x * sep. Zero otherwise: the old clamp.
+		float vr_lin = 1.0f - vr_stereo.y * q;
+		return vr_stereo.x * ((vr_splits.x != 0.0f) ? max(vr_splits.x, vr_lin) : max(0.0f, vr_lin));
 	}
 
 	if (vr_map_mode == 2u)
@@ -139,7 +142,20 @@ void main()
 
 	#if !VS_FST
 		if (vr_stereo.x != 0.0f || vr_map_mode != 0u)
-			gl_Position.x += vr_eye_sign() * vr_stereo_disp(a_q, gl_Position.z);
+		{
+			float vr_d = vr_eye_sign() * vr_stereo_disp(a_q, gl_Position.z);
+			// Linear map, first person (Steam Frame): vr_splits.y/.z rotate the parallax with head roll so it
+			// stays along the eye baseline (no vertical disparity). Both are zero otherwise: a sideways shift.
+			if (vr_map_mode == 0u && (vr_splits.y != 0.0f || vr_splits.z != 0.0f))
+			{
+				gl_Position.x += vr_d * (1.0f - vr_splits.z);
+				gl_Position.y += vr_d * vr_splits.y;
+			}
+			else
+			{
+				gl_Position.x += vr_d;
+			}
+		}
 	#else
 		if (vr_band[0].w != 0.0f)
 			gl_Position.x += vr_collimate_signed();
@@ -557,7 +573,19 @@ void main()
 	gl_Position = vtx.p;
 	#if !VS_FST
 		if (vr_stereo.x != 0.0f || vr_map_mode != 0u)
-			gl_Position.x += vr_eye_sign() * vr_stereo_disp(vtx.t.w, gl_Position.z);
+		{
+			float vr_d = vr_eye_sign() * vr_stereo_disp(vtx.t.w, gl_Position.z);
+			// Linear map, first person (Steam Frame): head-roll rotation of the parallax, as above.
+			if (vr_map_mode == 0u && (vr_splits.y != 0.0f || vr_splits.z != 0.0f))
+			{
+				gl_Position.x += vr_d * (1.0f - vr_splits.z);
+				gl_Position.y += vr_d * vr_splits.y;
+			}
+			else
+			{
+				gl_Position.x += vr_d;
+			}
+		}
 	#else
 		if (vr_band[0].w != 0.0f)
 			gl_Position.x += vr_collimate_signed();

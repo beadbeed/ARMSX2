@@ -28,6 +28,7 @@
 #ifdef ENABLE_OPENXR
 #include "VR/StereoDump.h"
 #include "VR/VRManager.h"
+#include <cstdlib>
 #endif
 
 #include "common/Console.h"
@@ -1705,7 +1706,11 @@ bool GSRenderer::SaveSnapshotToMemory(u32 window_width, u32 window_height, bool 
 	// same device. The vsync-path callers are already post-drain (no-op there).
 	DrainBackQueue();
 
+#ifdef ENABLE_OPENXR
+	GSTexture* current = g_gs_device->GetCurrent();
+#else
 	GSTexture* const current = g_gs_device->GetCurrent();
+#endif
 	if (!current)
 	{
 		*width = 0;
@@ -1713,6 +1718,17 @@ bool GSRenderer::SaveSnapshotToMemory(u32 window_width, u32 window_height, bool 
 		pixels->clear();
 		return false;
 	}
+
+#ifdef ENABLE_OPENXR
+	// Outbreak VR (Steam Frame), PenguinScreen2's snapshot-layer hook: PCSX2_VR_SNAPSHOT_LAYER=1 makes
+	// screenshots and GS dump thumbnails of a per-eye frame show the right eye alone.
+	if (current->GetArrayLayers() > 1)
+	{
+		static const char* layer_env = std::getenv("PCSX2_VR_SNAPSHOT_LAYER");
+		if (layer_env && layer_env[0] == '1')
+			current = current->GetLayerProxyTexture(1);
+	}
+#endif
 
 	const GSVector4i src_rect(CalculateDrawSrcRect(current, m_real_size));
 	const GSVector4 src_uv(GSVector4(src_rect) / GSVector4(current->GetSize()).xyxy());
