@@ -113,9 +113,9 @@ namespace VMManager
 	bool HasValidVM();
 
 #ifdef ENABLE_OPENXR
-	/// Outbreak VR: true while the network adapter is on (or PCSX2_TEST_ONLINE_LOCKS=1 forces it for testing). The VR
-	/// layer then keeps to its online rules (never pause, change speed, or load or save a state). Unlike PenguinScreen2,
-	/// nothing in VMManager itself enforces those locks yet.
+	/// Outbreak VR: true while the network adapter is on (or PCSX2_TEST_ONLINE_LOCKS=1 forces it for testing): nothing may
+	/// pause the game, change its speed, or load or save a state. SetPaused, FrameAdvance, DoLoadState, DoSaveState,
+	/// LoadState, LoadStateFromSlot, SetLimiterMode and UpdateTargetSpeed enforce it, as in PenguinScreen2.
 	bool IsOnlineLocked();
 #endif
 

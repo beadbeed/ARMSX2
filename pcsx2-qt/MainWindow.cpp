@@ -115,6 +115,20 @@ static QString s_current_disc_serial;
 static quint32 s_current_disc_crc;
 static quint32 s_current_running_crc;
 
+#ifdef ENABLE_OPENXR
+// Outbreak VR online locks (PenguinScreen2 MainWindow.cpp PauseLockedOnline): online (network adapter on, or
+// PCSX2_TEST_ONLINE_LOCKS=1) the game must never pause, since the server drops a client that goes quiet. Says why.
+static bool PauseLockedOnline()
+{
+	if (!s_vm_valid || s_vm_paused || !VMManager::IsOnlineLocked())
+		return false;
+	Host::AddKeyedOSDMessage("PauseOnlineLocked",
+		QCoreApplication::translate("MainWindow", "Pausing is disabled while the network adapter is on.").toStdString(),
+		Host::OSD_QUICK_DURATION);
+	return true;
+}
+#endif
+
 static constexpr const char* CONTROLLER_TESTER_URL =
 	"https://github.com/PCSX2/tools/releases/download/tests%2Fpad/padtest_ps2.elf";
 
@@ -650,10 +664,31 @@ void MainWindow::connectVMThreadSignals(EmuThread* thread)
 	connect(thread, &EmuThread::onAchievementsHardcoreModeChanged, this, &MainWindow::onAchievementsHardcoreModeChanged);
 
 	connect(m_ui.actionReset, &QAction::triggered, this, &MainWindow::requestReset);
+#ifdef ENABLE_OPENXR
+	// Outbreak VR online locks (PenguinScreen2 MainWindow::onPauseActionToggled): online a pause is refused here too,
+	// so the pause buttons do not stay checked over the game that VMManager keeps running.
+	const auto pause_toggled = [this](bool checked) {
+		if (checked && PauseLockedOnline())
+		{
+			QSignalBlocker sb(m_ui.actionPause);
+			QSignalBlocker sbt(m_ui.actionToolbarPause);
+			m_ui.actionPause->setChecked(false);
+			m_ui.actionToolbarPause->setChecked(false);
+			return;
+		}
+		g_emu_thread->setVMPaused(checked);
+	};
+	connect(m_ui.actionPause, &QAction::toggled, this, pause_toggled);
+#else
 	connect(m_ui.actionPause, &QAction::toggled, thread, &EmuThread::setVMPaused);
+#endif
 	connect(m_ui.actionFullscreen, &QAction::triggered, thread, &EmuThread::toggleFullscreen);
 	connect(m_ui.actionToolbarReset, &QAction::triggered, this, &MainWindow::requestReset);
+#ifdef ENABLE_OPENXR
+	connect(m_ui.actionToolbarPause, &QAction::toggled, this, pause_toggled);
+#else
 	connect(m_ui.actionToolbarPause, &QAction::toggled, thread, &EmuThread::setVMPaused);
+#endif
 	connect(m_ui.actionToolbarFullscreen, &QAction::triggered, thread, &EmuThread::toggleFullscreen);
 	connect(m_ui.actionToggleSoftwareRendering, &QAction::triggered, thread, &EmuThread::toggleSoftwareRendering);
 #ifdef ENABLE_QT_DEBUGGER
@@ -1416,6 +1451,12 @@ void MainWindow::switchToGameListView()
 		m_game_list_widget->setFocus();
 		return;
 	}
+
+#ifdef ENABLE_OPENXR
+	// Showing the game list pauses the game, which must never happen online.
+	if (m_display_created && PauseLockedOnline())
+		return;
+#endif
 
 	if (m_display_created)
 	{

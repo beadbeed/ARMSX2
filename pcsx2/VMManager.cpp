@@ -393,8 +393,11 @@ bool VMManager::HasValidVM()
 }
 
 #ifdef ENABLE_OPENXR
-// Copied from PenguinScreen2 (VMManager.cpp), where it also guards SetPaused, DoLoadState, DoSaveState,
-// SetLimiterMode and UpdateTargetSpeed. Here only the VR layer asks it for now.
+// Copied from PenguinScreen2 (VMManager.cpp). Online (network adapter on) the game must never pause, change speed, or
+// load or save a state: the server drops a client that goes quiet and bans speed changes, and a state load desyncs the
+// room. Every UI path (hotkeys, Qt, FullscreenUI, PINE) goes through SetPaused, FrameAdvance, DoLoadState, DoSaveState,
+// LoadState, LoadStateFromSlot, SetLimiterMode and UpdateTargetSpeed, so the locks are there (Steam Frame M2).
+// PCSX2_TEST_ONLINE_LOCKS=1 forces them on with the adapter off, for testing.
 bool VMManager::IsOnlineLocked()
 {
 	static const bool s_test_online_locks = []() {
@@ -405,6 +408,26 @@ bool VMManager::IsOnlineLocked()
 		return on;
 	}();
 	return EmuConfig.DEV9.EthEnable || s_test_online_locks;
+}
+
+// The state load and save refusals of the online locks, with PenguinScreen2's log line and message.
+static bool OnlineLockRefusesStateLoad(Error* error)
+{
+	if (!VMManager::IsOnlineLocked())
+		return false;
+	Console.Warning("(VMManager) Load state refused: the network adapter is on.");
+	Error::SetString(error, TRANSLATE_STR("VMManager", "Save states are disabled while the network adapter is on."));
+	return true;
+}
+
+static bool OnlineLockRefusesStateSave(const std::function<void(const std::string&)>& error_callback)
+{
+	if (!VMManager::IsOnlineLocked())
+		return false;
+	Console.Warning("(VMManager) Save state refused: the network adapter is on.");
+	if (error_callback)
+		error_callback(TRANSLATE_STR("VMManager", "Save states are disabled while the network adapter is on."));
+	return true;
 }
 #endif
 
@@ -2179,6 +2202,16 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	if (Achievements::IsHardcoreModeActive() && (!state_to_load.empty() || DebugInterface::getPauseOnEntry()))
 		return VMBootResult::PromptDisableHardcoreMode;
 
+#ifdef ENABLE_OPENXR
+	// Online locks (PenguinScreen2): the game runs at 100% online, whatever the boot options say.
+	if (IsOnlineLocked())
+	{
+		if (boot_params.start_unlimited.value_or(false) || boot_params.start_turbo.value_or(false))
+			Console.WriteLn("(VMManager) Online: ignoring the boot turbo/unlimited option (the game runs at 100%% online).");
+		s_limiter_mode = LimiterModeType::Nominal;
+	}
+	else
+#endif
 	if (boot_params.start_unlimited.value_or(false))
 		s_limiter_mode = LimiterModeType::Unlimited;
 	else if (boot_params.start_turbo.value_or(false))
@@ -2587,6 +2620,11 @@ std::string VMManager::GetCurrentSaveStateFileName(s32 slot, bool backup)
 
 bool VMManager::DoLoadState(const char* filename, Error* error)
 {
+#ifdef ENABLE_OPENXR
+	if (OnlineLockRefusesStateLoad(error))
+		return false;
+#endif
+
 	if (GSDumpReplayer::IsReplayingDump())
 	{
 		Error::SetString(error, TRANSLATE_STR("VMManager", "Cannot load state while replaying a GS dump."));
@@ -2615,6 +2653,11 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 
 void VMManager::DoSaveState(const char* filename, s32 slot_for_message, bool zip_on_thread, bool backup_old_state, std::function<void(const std::string&)> error_callback)
 {
+#ifdef ENABLE_OPENXR
+	if (OnlineLockRefusesStateSave(error_callback))
+		return;
+#endif
+
 	if (GSDumpReplayer::IsReplayingDump())
 	{
 		error_callback(TRANSLATE_STR("VMManager", "Cannot save state while replaying a GS dump."));
@@ -2757,6 +2800,13 @@ u32 VMManager::DeleteSaveStates(const char* game_serial, u32 game_crc, bool also
 
 bool VMManager::LoadState(const char* filename, Error* error)
 {
+#ifdef ENABLE_OPENXR
+	// Refuse here, before DoLoadState: a DoLoadState failure resets the VM below, which online would reboot the game
+	// and drop the room.
+	if (OnlineLockRefusesStateLoad(error))
+		return false;
+#endif
+
 	if (Achievements::IsHardcoreModeActive())
 	{
 		Error::SetString(error,
@@ -2783,6 +2833,11 @@ bool VMManager::LoadState(const char* filename, Error* error)
 
 bool VMManager::LoadStateFromSlot(s32 slot, bool backup, Error* error)
 {
+#ifdef ENABLE_OPENXR
+	if (OnlineLockRefusesStateLoad(error))
+		return false;
+#endif
+
 	const std::string filename = GetCurrentSaveStateFileName(slot, backup);
 	if (filename.empty() || !FileSystem::FileExists(filename.c_str()))
 	{
@@ -2873,6 +2928,17 @@ LimiterModeType VMManager::GetLimiterMode()
 
 void VMManager::SetLimiterMode(LimiterModeType type)
 {
+#ifdef ENABLE_OPENXR
+	if (type != LimiterModeType::Nominal && IsOnlineLocked())
+	{
+		Console.Warning("(VMManager) Speed change refused: the network adapter is on (the game runs at 100%% online).");
+		Host::AddKeyedOSDMessage("OnlineSpeedRefused",
+			TRANSLATE_STR("VMManager", "Speed changes are disabled while the network adapter is on."),
+			Host::OSD_QUICK_DURATION);
+		return;
+	}
+#endif
+
 	if (s_limiter_mode == type)
 		return;
 
@@ -2918,7 +2984,24 @@ void VMManager::UpdateTargetSpeed()
 	s_target_speed_synced_to_host = false;
 	s_use_vsync_for_timing = false;
 
+#ifdef ENABLE_OPENXR
+	// Online the game runs at exactly 100%: no NominalScalar, turbo, fast-boot fast forward or host-refresh retiming
+	// (which can move the speed by up to 5%).
+	static bool s_online_speed_held = false;
+	const bool online_locked = IsOnlineLocked();
+	if (online_locked != s_online_speed_held)
+	{
+		s_online_speed_held = online_locked;
+		if (online_locked)
+			Console.WriteLn("(VMManager) Online: emulation speed held at 100%%.");
+	}
+	if (online_locked)
+		target_speed = 1.0f;
+
+	if (!online_locked && EmuConfig.EmulationSpeed.SyncToHostRefreshRate)
+#else
 	if (EmuConfig.EmulationSpeed.SyncToHostRefreshRate)
+#endif
 	{
 		// TODO: This is accessing GS thread state.. I _think_ it should be okay, but I still hate it.
 		// We can at least avoid the query in the first place if we're not using sync to host.
@@ -3050,6 +3133,19 @@ void VMManager::FrameAdvance(u32 num_frames /*= 1*/)
 			Host::OSD_WARNING_DURATION);
 		return;
 	}
+
+#ifdef ENABLE_OPENXR
+	// Frame advance ends in a pause (SetState, not SetPaused), so the online lock refuses it here. PenguinScreen2
+	// refuses it only in the hotkey; ARMSX2's PINE MsgFrameAdvance comes here too.
+	if (IsOnlineLocked())
+	{
+		Console.Warning("(VMManager) Frame advance refused: the network adapter is on (the game never pauses online).");
+		Host::AddKeyedOSDMessage("OnlinePauseRefused",
+			TRANSLATE_STR("VMManager", "The game never pauses while the network adapter is on."),
+			Host::OSD_QUICK_DURATION);
+		return;
+	}
+#endif
 
 	s_frame_advance_count = num_frames;
 	SetState(VMState::Running);
@@ -3547,6 +3643,19 @@ void VMManager::SetPaused(bool paused)
 	if (!HasValidVM())
 		return;
 
+#ifdef ENABLE_OPENXR
+	if (paused && IsOnlineLocked())
+	{
+		// Qt dialogs, FullscreenUI, input recording and debugger breaks all pause through here; online their UI opens
+		// over the running game instead.
+		Console.Warning("(VMManager) Pause refused: the network adapter is on (the game never pauses online).");
+		Host::AddKeyedOSDMessage("OnlinePauseRefused",
+			TRANSLATE_STR("VMManager", "The game never pauses while the network adapter is on."),
+			Host::OSD_QUICK_DURATION);
+		return;
+	}
+#endif
+
 	Console.WriteLn(paused ? "(VMManager) Pausing..." : "(VMManager) Resuming...");
 	SetState(paused ? VMState::Paused : VMState::Running);
 }
@@ -3849,6 +3958,17 @@ void VMManager::CheckForDEV9ConfigChanges(const Pcsx2Config& old_config)
 		return;
 
 	DEV9CheckChanges(old_config);
+
+#ifdef ENABLE_OPENXR
+	// The adapter can be switched on mid-session: drop any turbo/unlimited/slow-motion mode and re-clamp the speed to
+	// 100% now, rather than on the next unrelated speed update. Switching it off restores the normal speed rules.
+	if (EmuConfig.DEV9.EthEnable != old_config.DEV9.EthEnable)
+	{
+		if (IsOnlineLocked())
+			s_limiter_mode = LimiterModeType::Nominal;
+		UpdateTargetSpeed();
+	}
+#endif
 }
 
 void VMManager::CheckForMemoryCardConfigChanges(const Pcsx2Config& old_config)
