@@ -7402,9 +7402,12 @@ void GSRendererHW::DetermineVRStereoConfig(const GSTextureCache::Target* rt, con
 	float vr_collimate = 0.0f;
 	if (vr_engaged && PRIM->FST && st.collimate_disparity != 0.0f)
 	{
-		bool matched = (st.collimate_rule_count == 0);
 #ifdef ENABLE_OPENXR
+		// As in PenguinScreen2: the VR layer's profiles collimate only the FST draws their rules match.
+		bool matched = false;
 		int matched_rule = -1;
+#else
+		bool matched = (st.collimate_rule_count == 0);
 #endif
 		const int rw = m_r.width();
 		const int rh = m_r.height();
