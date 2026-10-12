@@ -240,7 +240,11 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 	if (VR::VulkanBootstrapActive())
 	{
 		if (VR::CreateVulkanInstanceThroughXR(&instance_create_info, &instance))
+		{
+			// The runtime may add extensions of its own; these are the ones asked for (driver report).
+			s_enabled_instance_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 			return instance;
+		}
 	}
 #endif
 	VkResult res = vkCreateInstance(&instance_create_info, nullptr, &instance);
@@ -1747,6 +1751,10 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
 void GSDeviceVK::WaitForGPUIdle()
 {
 	g_perfmon.Put(GSPerfMon::GpuBlockingWaits, 1);
+#ifdef ENABLE_OPENXR
+	// vkDeviceWaitIdle uses every queue of the device, including the one the OpenXR session shares.
+	const VR::ScopedXrQueueLock xr_queue_lock;
+#endif
 	vkDeviceWaitIdle(m_device);
 }
 
@@ -2115,6 +2123,12 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	// on the write-combined road -- each of these six calls returns on a compare.
 	FlushStreamRingWrites();
 
+#ifdef ENABLE_OPENXR
+	// The OpenXR session shares this queue (the VR pacer submits frames on it): held from the submit through the
+	// present, early returns included, and given back before the next swap chain image is acquired.
+	std::optional<VR::ScopedXrQueueLock> xr_queue_lock;
+	xr_queue_lock.emplace();
+#endif
 	res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
 	if (res != VK_SUCCESS)
 	{
@@ -2156,6 +2170,9 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		const bool stats = VKSwapChain::IsPresentStatsEnabled();
 		const Common::Timer::Value t_present_start = stats ? Common::Timer::GetCurrentValue() : 0;
 		res = vkQueuePresentKHR(m_present_queue, &present_info);
+#ifdef ENABLE_OPENXR
+		xr_queue_lock.reset();
+#endif
 		if (stats)
 		{
 			const double present_elapsed_ms =
@@ -2922,6 +2939,13 @@ void GSDeviceVK::SubmitSpinCommand(u32 index, u32 cycles)
 		submit_info.pWaitSemaphores = &resources.semaphore;
 		submit_info.pWaitDstStageMask = sema_waits;
 	}
+#ifdef ENABLE_OPENXR
+	// The spin queue is the graphics queue the OpenXR session shares (nothing more to take when called from inside
+	// SubmitCommandBuffer, which holds the lock already).
+	std::optional<VR::ScopedXrQueueLock> xr_queue_lock;
+	if (m_spin_queue_is_graphics_queue)
+		xr_queue_lock.emplace();
+#endif
 	vkQueueSubmit(m_spin_queue, 1, &submit_info, resources.fence);
 	resources.in_progress = true;
 	resources.cycles = cycles;
