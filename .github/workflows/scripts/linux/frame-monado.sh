@@ -152,7 +152,8 @@ session)
 	mkdir -p "$home"
 	echo "== launch-outbreak-vr.sh with no game: the first-run ini"
 	set +e
-	HOME="$home" "$appdir/launch-outbreak-vr.sh" >/dev/null 2>&1
+	# MONADO_ENV unsets XDG_CONFIG_HOME (the runner sets it), so the ini lands under this HOME.
+	"${MONADO_ENV[@]}" HOME="$home" "$appdir/launch-outbreak-vr.sh" >/dev/null 2>&1
 	set -e
 	ini="$home/.config/ARMSX2/inis/PCSX2.ini"
 	[ -f "$ini" ] || {

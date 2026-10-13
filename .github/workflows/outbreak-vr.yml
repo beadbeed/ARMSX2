@@ -169,12 +169,11 @@ jobs:
       - name: frame-xrprobe against Monado
         run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" probe
 
-      # The ARMSX2 steps are stretch checks: they may fail without failing the job until they have passed in CI.
       - name: ARMSX2 -vr-info against Monado
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" vr-info
 
+      # A stretch check: it may fail without failing the job until it has passed in CI.
       - name: ARMSX2 --vr -bigpicture against Monado (no game)
         if: ${{ !cancelled() }}
         continue-on-error: true
