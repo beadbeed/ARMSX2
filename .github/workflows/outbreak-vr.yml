@@ -96,3 +96,97 @@ jobs:
 
       - name: Hook parity
         run: python3 tools/outbreak-vr/hook-parity.py --ps2 penguinscreen2
+
+  # Headless OpenXR test (the M0 brief's Step 7.6), experimental: Monado, the open source OpenXR runtime, built from a
+  # pinned release (build-monado.sh), in-process, with its simulated HMD and its null compositor, on lavapipe. Both
+  # jobs have continue-on-error, so a Monado failure shows on these jobs but never turns the run red, and nothing
+  # else depends on them. The Monado build is cached (key: build-monado.sh's hash) and runs alongside the ARMSX2 build.
+  monado:
+    name: Monado for the headless OpenXR test
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Monado cache
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: ~/monado
+          key: monado ${{ runner.os }} ${{ runner.arch }} ${{ hashFiles('.github/workflows/scripts/linux/build-monado.sh') }}
+          lookup-only: true
+
+      - name: Install Monado's build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo bash .github/workflows/scripts/linux/build-monado.sh deps
+
+      - name: Build Monado
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash .github/workflows/scripts/linux/build-monado.sh build ~/monado
+
+  # The Frame bundle against Monado: frame-xrprobe's whole session (phases A-D), then ARMSX2 itself (-vr-info, and
+  # --vr -bigpicture with no game, which opens the GS and so the VR session without a VM). No BIOS, disc, memory card
+  # or savestate is ever used. The logs are uploaded as frame-monado-logs-<sha>.
+  frame-monado:
+    name: Steam Frame probe and ARMSX2 against Monado (no headset)
+    needs: [frame-linux-arm64, monado]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Download the Frame bundle
+        uses: actions/download-artifact@v8
+        with:
+          pattern: outbreak-vr-frame-*
+          path: dl
+          merge-multiple: true
+
+      - name: Restore Monado
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/monado
+          key: monado ${{ runner.os }} ${{ runner.arch }} ${{ hashFiles('.github/workflows/scripts/linux/build-monado.sh') }}
+          fail-on-cache-miss: true
+
+      # Monado's libraries (the same list it was built with), Xvfb for the Big Picture run, and the libraries
+      # armsx2-qt leaves to the system (the same list as frame-smoke).
+      - name: Install tools
+        run: |
+          sudo bash .github/workflows/scripts/linux/build-monado.sh deps
+          sudo tools/retry.sh apt-get -y install binutils zstd xvfb \
+            libasound2-dev libaio-dev libcurl4-openssl-dev libdbus-1-dev libdecor-0-dev libegl-dev libevdev-dev \
+            libfontconfig-dev libfreetype-dev libgtk-3-dev libgudev-1.0-dev libharfbuzz-dev libinput-dev libopengl-dev \
+            libopus-dev libpcap-dev libpipewire-0.3-dev libpulse-dev libssl-dev libudev-dev libva-dev libwayland-dev \
+            libx11-dev libx11-xcb-dev libx264-dev libxcb1-dev libxcb-cursor-dev libxcb-icccm4-dev libxcb-image0-dev \
+            libxcb-keysyms1-dev libxcb-randr0-dev libxcb-render-util0-dev libxcb-shape0-dev libxcb-xinput-dev \
+            libxcb-xkb-dev libxext-dev libxkbcommon-x11-dev libxrandr-dev zlib1g-dev
+
+      - name: frame-xrprobe against Monado
+        run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" probe
+
+      # The ARMSX2 steps are stretch checks: they may fail without failing the job until they have passed in CI.
+      - name: ARMSX2 -vr-info against Monado
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" vr-info
+
+      - name: ARMSX2 --vr -bigpicture against Monado (no game)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" session
+
+      - name: Upload the logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: frame-monado-logs-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/frame-monado/probe
+            ${{ runner.temp }}/frame-monado/*.txt
+          if-no-files-found: warn
