@@ -174,3 +174,22 @@ the GS present) came with M0-M2. What M3 adds (details and line numbers in `pcsx
 show the equipped weapon; the laser shows for guns only; the wrist card names the weapon; menus can be pointed at and
 selected with the trigger only; the pouches name the item and open the item screen at that cell; the brightness is
 comfortable in dark rooms.
+
+## Steam Frame: keeping `pcsx2/VR` in step with PenguinScreen2 (M5)
+
+`pcsx2/VR`, the VR settings page, the profiles and `tools/outbreak-vr/pine.py` are copies of PenguinScreen2's files with a
+few edits of ARMSX2's own. `tools/outbreak-vr/sync-vr-layer.py` keeps the two in step. Given a PenguinScreen2 checkout and
+a commit, it lists what changed in the copied files since `tools/outbreak-vr/PENGUINSCREEN2_COMMIT`, copies the new
+versions, puts ARMSX2's edits back on top, updates the commit and the source line of `pcsx2/VR/VR-SOURCE.md`, and runs
+`hook-parity.py`. It also lists the files ARMSX2 ports by hand (`Config.h`, `VMManager.cpp` and the rest) that changed in
+PenguinScreen2, because no patch carries those over.
+
+    python3 tools/outbreak-vr/sync-vr-layer.py --ps2 <PenguinScreen2 checkout> --commit <commit or branch>           # dry run
+    python3 tools/outbreak-vr/sync-vr-layer.py --ps2 <PenguinScreen2 checkout> --commit <commit or branch> --apply   # write
+
+ARMSX2's edits are one patch file per file in `tools/outbreak-vr/vr-local-edits/`. A hunk that no longer applies is
+reported (the closest place in the new file and the first line that differs) and `--apply` writes it to a `.rej` file; make
+that edit by hand, delete the `.rej`, and run `sync-vr-layer.py --ps2 <checkout> --record` to write the patches again.
+`--record` is also what to run after changing a copied file on purpose. A sync refuses to run while a copied file has an edit
+that is not in a patch, because it would lose it. The details, and what the tool cannot judge, are in `pcsx2/VR/VR-SOURCE.md`
+("Keeping the two copies in step"); `tools/outbreak-vr/sync-vr-layer-test.py` tests the tool.

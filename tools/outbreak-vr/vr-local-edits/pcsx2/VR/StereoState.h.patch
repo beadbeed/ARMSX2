@@ -1,0 +1,37 @@
+# ARMSX2 (Steam Frame) local edit to pcsx2/VR/StereoState.h: a diff against PenguinScreen2 at the commit in
+# tools/outbreak-vr/PENGUINSCREEN2_COMMIT, with line endings folded to LF. Written by
+# tools/outbreak-vr/sync-vr-layer.py --record; do not edit by hand.
+--- a/pcsx2/VR/StereoState.h
++++ b/pcsx2/VR/StereoState.h
+@@ -57,6 +57,8 @@
+ 		float log_w1 = 0.0f;
+ 		float log_dfar = 0.0f;
+ 
++#ifdef ENABLE_OPENXR
++		// Outbreak VR (Steam Frame): PenguinScreen2's first-person fields, for the OpenXR VR layer.
+ 		// First-person scene armed (linear map only).
+ 		bool first_person = false;
+ 		// Linear-map disparity floor, in units of separation: 0 keeps the old clamp at the
+@@ -74,6 +76,8 @@
+ 		float fp_sep_target = 0.0f;
+ 		float fp_ease = 1.0f;
+ 		float fp_ndc_ratio = 1.0f;
++#endif
++
+ 	};
+ 
+ 	void Publish(const Params& params);
+@@ -86,6 +90,7 @@
+ 
+ 	void AdvanceEye();
+ 
++#ifdef ENABLE_OPENXR
+ 	// Head roll (radians, game camera convention) published by the camera driver each
+ 	// time it writes the look-at. HeadRoll returns false if never set or older than 150 ms.
+ 	void PublishHeadRoll(float roll_rad);
+@@ -98,4 +103,5 @@
+ 	// Offline-only gate for the headset-free stereo dump (false while the network adapter is on).
+ 	void SetDumpAllowed(bool allowed);
+ 	bool DumpAllowed();
++#endif
+ }

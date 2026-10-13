@@ -1,0 +1,27 @@
+# ARMSX2 (Steam Frame) local edit to pcsx2-qt/Settings/VRSettingsWidget.cpp: a diff against PenguinScreen2 at the commit in
+# tools/outbreak-vr/PENGUINSCREEN2_COMMIT, with line endings folded to LF. Written by
+# tools/outbreak-vr/sync-vr-layer.py --record; do not edit by hand.
+--- a/pcsx2-qt/Settings/VRSettingsWidget.cpp
++++ b/pcsx2-qt/Settings/VRSettingsWidget.cpp
+@@ -140,7 +140,8 @@
+ 		tr("How many degrees Fit the Headset adds to your headset's field of view, half on each side, so a quick turn of "
+ 		   "your head shows more of the room before the edge of the picture. Applies the next time first person starts."));
+ 
+-	dialog()->registerWidgetHelp(m_ui.edgeFill, tr("Edge Fill"), tr("Checked"),
++	// ARMSX2 (Steam Frame M3): [VR] EdgeFill defaults to false (Config.h), so the recommended value says Unchecked.
++	dialog()->registerWidgetHelp(m_ui.edgeFill, tr("Edge Fill"), tr("Unchecked"),
+ 		tr("In first person, the space around the picture shows a dim, blurred continuation of its edges instead of "
+ 		   "black, so a fast head turn shows more of the room rather than a black border. It moves with your head, like "
+ 		   "a soft vignette. Only changes what you see in the headset. Takes effect the next time VR starts."));
+@@ -233,9 +234,10 @@
+ 			break;
+ 
+ 		case VR::SessionStatus::NotLaunchedForVR:
++			// ARMSX2 (Steam Frame M3): the Frame's launcher.
+ 			text = tr("VR is enabled, but this session was launched WITHOUT the VR runtime, so it is running "
+ 					  "flat on your monitor. To use the headset, close the emulator and relaunch it with the VR "
+-					  "launch script (launch-vr-session.sh). The settings below still apply to the next VR launch.");
++					  "launch script (launch-outbreak-vr.sh). The settings below still apply to the next VR launch.");
+ 			accent = QStringLiteral("#7a4a00");
+ 			break;
+ 

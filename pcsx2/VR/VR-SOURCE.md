@@ -7,8 +7,10 @@ where Outbreak VR stands ..."). It is built only when `ENABLE_OPENXR` is on, whi
 is unchanged.
 
 The files were copied whole, not merged: PenguinScreen2 commit 990b456 stripped comments from 938 files, so a git
-merge between the two trees is noise. To update, copy the files again from a newer PenguinScreen2 commit, re-apply
-the local edits below, and check the hook sites in the table at the end against PenguinScreen2's code.
+merge between the two trees is noise. To update, run `tools/outbreak-vr/sync-vr-layer.py` (see "Keeping the two copies
+in step" below): it copies the files again from a newer PenguinScreen2 commit, puts the local edits below back on top
+(they are kept as patch files in `tools/outbreak-vr/vr-local-edits/`), and runs the hook parity check on the hook sites
+in the table at the end.
 
 ## Copied files
 
@@ -33,7 +35,10 @@ Not copied, on purpose:
 
 - `pcsx2/VR/StereoState.h` and `.cpp`: ARMSX2 already had these (its stereo renderer uses them on every platform).
   PenguinScreen2's version is ARMSX2's plus a few fields and functions, which were added to ARMSX2's files under
-  `#ifdef ENABLE_OPENXR` (see the local edits), so the other builds see exactly the old files.
+  `#ifdef ENABLE_OPENXR` (see the local edits), so the other builds see exactly the old files. Not copied by hand,
+  but the sync tool does take PenguinScreen2's version of both and puts those guards back from a patch, because the
+  guards are the only difference. Anything new PenguinScreen2 adds to them comes in unguarded: the tool says so, and
+  it has to go under `#ifdef ENABLE_OPENXR` here.
 - `pcsx2/VR/StereoSettings.h` and `.cpp` are ARMSX2's own (they do not exist in PenguinScreen2). Since M1, with
   `ENABLE_OPENXR` they publish nothing: `VR::UpdateSettings` and `VR::ApplySceneStereo` are the only writers of
   `VR::StereoState` (from `[VR] Enable`, `StereoMode` and the game's profile). StereoSettings keeps only
@@ -43,7 +48,9 @@ Not copied, on purpose:
 
 ## Local edits to the copied files
 
-Every change made here to a file copied from PenguinScreen2, to be ported back:
+Every change made here to a file copied from PenguinScreen2, to be ported back. Each one is also a hunk in
+`tools/outbreak-vr/vr-local-edits/<path>.patch` (one patch per file, written by `sync-vr-layer.py --record`), which is
+what a sync re-applies. If you change a copied file on purpose, run `--record` so the patch has the change.
 
 | File | Line | What | Why |
 |---|---|---|---|
@@ -208,8 +215,67 @@ less the statements the regexes name; the rest is still checked). It also checks
 the Vulkan shader. The frame-smoke job checks out PenguinScreen2 read only and runs it. Locally:
 `python3 tools/outbreak-vr/hook-parity.py --ps2 <PenguinScreen2 checkout> -v` lists every block.
 
-When `pcsx2/VR` is copied again from a newer PenguinScreen2 commit, put that commit in `PENGUINSCREEN2_COMMIT`, run
-the parity check, and port or allowlist whatever it reports.
+## Keeping the two copies in step (M5)
+
+`tools/outbreak-vr/sync-vr-layer.py` (Python 3.8 or newer, standard library and git only) brings a newer PenguinScreen2
+commit into the copied files and puts ARMSX2's local edits back on top. It is a dry run unless given `--apply`:
+
+    python3 tools/outbreak-vr/sync-vr-layer.py --ps2 <PenguinScreen2 checkout> --commit <commit or branch>
+    python3 tools/outbreak-vr/sync-vr-layer.py --ps2 <PenguinScreen2 checkout> --commit <commit or branch> --apply
+
+PenguinScreen2 is only read, from its git objects, so its checkout can be on any branch with any changes in it. A run
+does five things:
+
+1. **Lists what changed** in the copied files between `PENGUINSCREEN2_COMMIT` and the new commit (lines added and
+   removed, and the commits that touched them). It also lists the files ARMSX2 does not copy but ports by hand
+   (`pcsx2/Config.h` with `VROptions`, `VMManager.cpp` with the online locks, the GS, input and Qt hooks, the Vulkan
+   shader, the CMake lists) that changed and mention the VR layer. A patch cannot carry those over: read each diff.
+2. **Takes the new versions** of the copied files: everything in `pcsx2/VR` that PenguinScreen2 has (so also
+   `StereoState.*`, never `StereoSettings.*` or this file), `pcsx2/Input/VRInputSource.*`,
+   `bin/resources/vr-profiles`, the VR settings page, and `tools/outbreak-vr/pine.py`. A file PenguinScreen2 adds in
+   one of those folders is copied (it is in no CMake list: add it by hand); a file it removes is left in place and
+   named. PenguinScreen2's files have CRLF line endings and ARMSX2's mostly LF: the tool compares and patches with the
+   line endings folded, and writes each file with the line endings the ARMSX2 file already has (LF for a new one).
+3. **Re-applies the local edits.** They are `tools/outbreak-vr/vr-local-edits/<path>.patch`, one unified diff per file
+   that differs from PenguinScreen2 at `PENGUINSCREEN2_COMMIT`. A hunk is looked for as it was written, at the nearest
+   place to where the last hunk landed, so line numbers do not matter (`-v` says where each one went, for the tables
+   above). A hunk that is already in the new copy (ported back) is skipped. A hunk that cannot be placed is reported
+   with the closest place in the new file and the first line that differs; `--apply` writes it to `<file>.rej` and
+   the rest of the file as far as it applied. `--fuzz N` lets a hunk lose N lines of context at each end.
+4. **Updates `PENGUINSCREEN2_COMMIT` and the source line at the top of this file** (branch, commit, date, subject;
+   the branch is the `--commit` argument when it names a branch, else `--branch`). The other places that still name
+   the old commit (the copied-files list, the line numbers of the hook table) are listed for you to update.
+5. **Runs `hook-parity.py`** against the new commit and prints its result (`-v` for every block). It needs no
+   checkout of the new commit: the tool writes the files it reads to a temporary folder.
+
+When `--apply` writes without a conflict it also writes the patch files again against the new commit and checks
+itself with a dry run (it must show no changes). When it leaves `.rej` files, make those edits by hand in the file,
+delete the `.rej`, and run `sync-vr-layer.py --ps2 <checkout> --record`, which writes the patches from the difference
+between ARMSX2's copies and PenguinScreen2 at `PENGUINSCREEN2_COMMIT`. `--record` is also what to run after changing a
+copied file on purpose.
+
+`--apply` refuses to run when a copied file has an edit that is not in a patch (it would lose it), when a patch does
+not apply to the recorded commit, or while a `.rej` file is there; it says which file. Exit codes: 0 clean; 1 a hunk or
+a patch needs a decision, or hook parity fails; 2 bad arguments or an unusable checkout.
+
+What the tool cannot judge:
+
+- A patch can apply and still be wrong, when PenguinScreen2 changed what the edit depended on. The Edge Fill hunk in
+  `VRSettingsWidget.cpp` says Unchecked because ARMSX2's `Config.h` defaults `[VR] EdgeFill` to false; when
+  `Config.h` is ported to PenguinScreen2's true, that hunk has to go (`--record` drops it once the file is right).
+- The hand-ported files (step 1) and the hook sites: the parity check covers only PenguinScreen2's `#ifdef ENABLE_VR`
+  blocks, so a change in an unguarded part of `Config.h` is only in the list from step 1.
+- `StereoState.*` is compiled by every ARMSX2 stereo build. New code PenguinScreen2 adds there arrives unguarded.
+
+`tools/outbreak-vr/sync-vr-layer-test.py` checks the tool on small made-up repos (conflicts, ported-back edits, new and
+removed files, unrecorded edits, `--apply` and `--record`).
+
+First runs (2026-10-12, PenguinScreen2 checkout on `headset1`, which the tool does not care about): `--record` wrote
+7 patches (`XRCompositor.cpp` 16 hunks, `pine.py` 5, `XRSession.cpp` 4, `StereoState.h` 4, `StereoState.cpp` 3,
+`VRSettingsWidget.cpp` 2, `XRSession.h` 1). A dry run against the commit recorded then shows no change, 7 of 7 patches apply, and parity
+passes. A dry run against `headset1` (29fec71) lists 5 copied files (`CameraDriver.cpp`, `HudCards.h`, `VRSettingsWidget.cpp`
+and the two Outbreak profiles), applies all 7 patches, passes parity, and lists `pcsx2/Config.h` and
+`pcsx2/VMManager.cpp` as hand-ported files that changed.
 
 ## Status of M0 (2026-10-12)
 

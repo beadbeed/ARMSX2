@@ -1,0 +1,33 @@
+# ARMSX2 (Steam Frame) local edit to pcsx2/VR/StereoState.cpp: a diff against PenguinScreen2 at the commit in
+# tools/outbreak-vr/PENGUINSCREEN2_COMMIT, with line endings folded to LF. Written by
+# tools/outbreak-vr/sync-vr-layer.py --record; do not edit by hand.
+--- a/pcsx2/VR/StereoState.cpp
++++ b/pcsx2/VR/StereoState.cpp
+@@ -3,9 +3,12 @@
+ 
+ #include "VR/StereoState.h"
+ 
++#include <mutex>
++
++#ifdef ENABLE_OPENXR
+ #include <atomic>
+ #include <chrono>
+-#include <mutex>
++#endif
+ 
+ namespace VR::StereoState
+ {
+@@ -47,6 +50,7 @@
+ 		s_current_eye ^= 1u;
+ 	}
+ 
++#ifdef ENABLE_OPENXR
+ 	namespace
+ 	{
+ 		std::atomic<float> s_head_roll{0.0f};
+@@ -103,4 +107,5 @@
+ 	{
+ 		return s_dump_allowed.load(std::memory_order_relaxed);
+ 	}
++#endif
+ }
