@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Outbreak VR: the Steam Frame bundle against a real OpenXR runtime, with no headset. outbreak-vr.yml runs this
 # (job frame-monado) on ubuntu-24.04-arm against Monado (build-monado.sh): in-process, the simulated HMD
-# (SIMULATED_ENABLE=1) and the null compositor (XRT_COMPOSITOR_NULL=1), with Mesa's lavapipe for Vulkan.
+# (SIMULATED_ENABLE=1) with two simple controllers (SIMULATED_LEFT/RIGHT=simple) and the null compositor
+# (XRT_COMPOSITOR_NULL=1, a fixed 20 Hz), with Mesa's lavapipe for Vulkan. The interaction profile each hand gets is
+# reported, not required.
 #   probe     frame-xrprobe --seconds-per-phase 3: an instance, a Vulkan device through XR_KHR_vulkan_enable2, a
 #             session that reaches VISIBLE or FOCUSED, frames rendered in every colour phase (A-D) with no
 #             xrEndFrame error, a clean teardown and exit code 0.
@@ -51,8 +53,10 @@ appdir=$(ls -d "$OUT"/bundle/outbreak-vr-frame-* | head -n 1)
 probe="$appdir/usr/bin/frame-xrprobe"
 
 # Monado only: XR_RUNTIME_JSON names it, the XDG directories are unset and each run gets an empty HOME.
+# Without SIMULATED_LEFT/RIGHT the simulated system has no controllers, so no interaction profile is ever bound.
 MONADO_ENV=(env -u XDG_CONFIG_HOME -u XDG_CONFIG_DIRS -u XDG_DATA_HOME -u XDG_DATA_DIRS
-	XR_RUNTIME_JSON="$manifest" XRT_COMPOSITOR_NULL=1 SIMULATED_ENABLE=1 XRT_LOG=debug)
+	XR_RUNTIME_JSON="$manifest" XRT_COMPOSITOR_NULL=1 SIMULATED_ENABLE=1 SIMULATED_LEFT=simple SIMULATED_RIGHT=simple
+	XRT_LOG=debug)
 
 want() {
 	local file=$1 text=$2 what=$3
@@ -89,7 +93,7 @@ probe)
 	want "$log" 'xrCreateSession (Vulkan' "no xrCreateSession"
 	grep -q 'xrCreateSession (Vulkan.*: XR_SUCCESS' "$log" || note "xrCreateSession failed"
 	grep -qE 'Session state: [A-Z_]+ -> (VISIBLE|FOCUSED) ' "$log" || note "the session never became VISIBLE or FOCUSED"
-	reached=$(grep -oE 'Session state: [A-Z_]+ -> [A-Z_]+' "$log" | sed 's/.*-> //' | tr '\n' ' ')
+	reached=$(grep -oE 'Session state: [A-Z_]+ -> [A-Z_]+' "$log" | sed 's/.*-> //' | tr '\n' ' ' || true)
 	echo "Session states reached: $reached"
 
 	phases=$(sed -n 's/.*Phases to run:\([A-D ]*\),.*/\1/p' "$log" | head -n 1 | xargs || true)
@@ -120,6 +124,11 @@ probe)
 		[ "${rendered:-0}" -gt 0 ] || note "phase $p rendered no frame"
 		[ "${errors:-x}" = 0 ] || note "phase $p: xrEndFrame errors ${errors:-unknown}"
 	done
+	# Reported only: which profile Monado binds for the simulated controllers.
+	profiles=$(grep -F 'Interaction profile (end of phase' "$log" | tail -n 2 | sed 's/.*), //' | tr '\n' ';' | sed 's/;$//; s/;/; /' || true)
+	echo "Interaction profiles after the last phase: ${profiles:-none logged}"
+	summary ""
+	summary "Interaction profiles after the last phase: ${profiles:-none logged}"
 	grep -q 'was cut short' "$log" && note "a phase was cut short"
 	want "$log" 'All phases done.' "the phases did not all run"
 	want "$log" 'xrDestroySession: XR_SUCCESS' "xrDestroySession failed"
@@ -250,6 +259,13 @@ session)
 	summary "### ARMSX2 --vr -bigpicture against Monado (no game)"
 	summary ""
 	summary "Exit code $code. Session states: $(grep -hoE '\(VR\) Session state: [A-Z_]+ -> [A-Z_]+' "$out" | sed 's/.*-> //' | tr '\n' ' ')"
+	# Reported only: the controllers as the VR layer saw them, and its frame statistics.
+	summary ""
+	grep -hE '\(VR\) (Left|Right) hand profile:|\(VR\) (Left|Right) controller:|\(VR\) Interaction profile changed|\(VR\) Frames:' "$out" |
+		sed 's/^\[[^]]*\] //' | awk '!seen[$0]++' | head -n 12 | while IFS= read -r line; do
+		echo "Reported: $line"
+		summary "- \`$line\`"
+	done || true
 	;;
 
 *)

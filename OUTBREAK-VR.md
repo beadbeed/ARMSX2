@@ -193,3 +193,30 @@ that edit by hand, delete the `.rej`, and run `sync-vr-layer.py --ps2 <checkout>
 `--record` is also what to run after changing a copied file on purpose. A sync refuses to run while a copied file has an edit
 that is not in a patch, because it would lose it. The details, and what the tool cannot judge, are in `pcsx2/VR/VR-SOURCE.md`
 ("Keeping the two copies in step"); `tools/outbreak-vr/sync-vr-layer-test.py` tests the tool.
+
+## Steam Frame: CI against a real OpenXR runtime (Monado)
+
+The Steam Frame build is now also tested against a real OpenXR runtime in CI, with no headset. Two jobs in
+`outbreak-vr.yml` handle it:
+- `monado` builds Monado v25.1.0 from source (cached).
+- `frame-monado` runs the Frame bundle against Monado's simulated headset and its null compositor, which takes frames
+  and shows nothing, on the CPU Vulkan driver (lavapipe).
+
+What passes (runs 38327093646 and 38328853148):
+
+- **frame-xrprobe, the whole session.** It creates its Vulkan device through `XR_KHR_vulkan_enable2` and gets the session
+  to FOCUSED. All four colour phases (A: one swapchain with two layers, B: one swapchain per eye, C: a quad, D: a
+  cylinder) submit about 60 frames each at 20 Hz with no error. Then it tears down and exits 0.
+- **ARMSX2 -vr-info**: the VR layer finds Monado and the simulated headset.
+- **ARMSX2 itself in VR, with no game**: `AppRun --vr -bigpicture` on a virtual X display.
+  - Big Picture starts the GS without a game, so the VR layer creates its Vulkan device through the runtime, opens a
+    session and the compositor, and submits frames.
+  - SIGTERM then shuts it down cleanly: VR is torn down with the GS device, and the exit code is 0.
+  - No BIOS, disc or save is ever used.
+
+This catches a VR layer or probe change that breaks the OpenXR calls, the Vulkan bootstrap, the session, the frame loop
+or the teardown, before the build goes to the headset. It cannot check SteamVR's own quirks, the Frame's GPU, what the
+eyes see, or anything that needs the game; those still need the headset. Both jobs are `continue-on-error`, so they never
+turn the run red: look at the `frame-monado` job's own result and its step summary (the probe's phase table). The logs
+are in the artifact `frame-monado-logs-<sha>`. Details are in `pcsx2/VR/VR-SOURCE.md`, "Headless OpenXR test against
+Monado (CI)".

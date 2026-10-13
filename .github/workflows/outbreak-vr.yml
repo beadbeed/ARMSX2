@@ -97,10 +97,11 @@ jobs:
       - name: Hook parity
         run: python3 tools/outbreak-vr/hook-parity.py --ps2 penguinscreen2
 
-  # Headless OpenXR test (the M0 brief's Step 7.6), experimental: Monado, the open source OpenXR runtime, built from a
-  # pinned release (build-monado.sh), in-process, with its simulated HMD and its null compositor, on lavapipe. Both
-  # jobs have continue-on-error, so a Monado failure shows on these jobs but never turns the run red, and nothing
-  # else depends on them. The Monado build is cached (key: build-monado.sh's hash) and runs alongside the ARMSX2 build.
+  # Headless OpenXR test (the M0 brief's Step 7.6): Monado, the open source OpenXR runtime, built from a pinned
+  # release (build-monado.sh), in-process, with its simulated HMD and its null compositor, on lavapipe. Both jobs keep
+  # continue-on-error, so a Monado failure (or gitlab.freedesktop.org being down on a cache miss) shows on these jobs
+  # but never turns the run red, and nothing else depends on them: read frame-monado's own result. The Monado build is
+  # cached (key: build-monado.sh's hash) and runs alongside the ARMSX2 build.
   monado:
     name: Monado for the headless OpenXR test
     runs-on: ubuntu-24.04-arm
@@ -173,10 +174,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" vr-info
 
-      # A stretch check: it may fail without failing the job until it has passed in CI.
       - name: ARMSX2 --vr -bigpicture against Monado (no game)
         if: ${{ !cancelled() }}
-        continue-on-error: true
         timeout-minutes: 10
         run: bash .github/workflows/scripts/linux/frame-monado.sh dl ~/monado "$RUNNER_TEMP/frame-monado" session
 

@@ -345,7 +345,8 @@ Not done, next:
   except the gsrunner replay: see "Status of M2" below.)
 - Still open from M0: which Frame controller profile path SteamVR accepts (`/interaction_profiles/valve/frame_controller`
   in VRInput.cpp, `.../frame_controller_valve` in Valve's docs; VRInput falls back to the Touch and simple profiles).
-- The Monado-in-CI stretch goal was not attempted.
+- The Monado-in-CI stretch goal was not attempted in M1. It is done now: see "Headless OpenXR test against Monado (CI)"
+  at the end of this file.
 
 ## Status of M2 (2026-10-12)
 
@@ -460,3 +461,98 @@ Not done, next:
   test PC's paths and PowerShell launchers.
 - M4: performance and heat (refresh rate, resolution sweep, thread pinning, Valve's perf CSV). M5: packaging, keeping
   the two copies of `pcsx2/VR` in step (port the local edits above back), and optional co-op.
+
+## Headless OpenXR test against Monado (CI)
+
+This is the M0 brief's Step 7.6 stretch goal, done on 2026-10-13. Two jobs in `outbreak-vr.yml` run the Frame bundle
+against a real OpenXR runtime with no headset:
+
+- **`monado`** builds Monado v25.1.0 from source (`.github/workflows/scripts/linux/build-monado.sh`; the script checks
+  that the tag is still commit 3b450e37b6). It builds the in-process runtime (`XRT_FEATURE_SERVICE=OFF`, so there is no
+  monado-service to start), the simulated HMD driver and the null compositor, and installs into `~/monado`. The build
+  takes about 80 s on ubuntu-24.04-arm and runs alongside the ARMSX2 build. It is cached under a key made from the
+  script's hash, so Monado is built again only when the script changes.
+- **`frame-monado`** restores that build and runs `.github/workflows/scripts/linux/frame-monado.sh` with
+  `XR_RUNTIME_JSON` set to Monado's manifest, `XRT_COMPOSITOR_NULL=1`, `SIMULATED_ENABLE=1` and two simple simulated
+  controllers. Vulkan is Mesa's lavapipe (llvmpipe, Mesa 25.2.8 on the runner). The job has three steps, each required:
+  1. **probe**: `frame-xrprobe --seconds-per-phase 3`, the full session. It must:
+     - exit 0;
+     - report Monado as the runtime and offer `XR_KHR_vulkan_enable2`;
+     - create its Vulkan device through `xrCreateVulkanDeviceKHR` and get a session that reaches VISIBLE or FOCUSED;
+     - run phases A, B, C and D (D because Monado offers cylinder layers), each with frames rendered and no
+       `xrEndFrame` error;
+     - end with `xrDestroySession` and `xrDestroyInstance` returning XR_SUCCESS.
+  2. **vr-info**: `QT_QPA_PLATFORM=offscreen AppRun -vr-info`. ARMSX2's VR layer, with its static loader, must create
+     an instance on Monado, find the headset ("Monado: Simulated HMD") and list `XR_KHR_vulkan_enable2`.
+  3. **session**: `AppRun --vr -bigpicture` on Xvfb, with the launcher's first-run ini and no game.
+     - Big Picture opens the GS without a VM, so GSDeviceVK runs the VR bootstrap exactly as it does with a game: an
+       instance on Monado, the Vulkan instance and device through `XR_KHR_vulkan_enable2`, the XR session on the GS
+       queue, and the compositor.
+     - The script waits for "(VR) VR session active" and a VISIBLE or FOCUSED state, lets frames run for 10 s, then
+       sends SIGTERM (ARMSX2's graceful shutdown).
+     - It requires exit code 0, "(VR) GS device destroyed" and "(VR) XR session destroyed", and no "abandon" or
+       "queue lock held over" line.
+     - No BIOS, disc, memory card or savestate is used.
+
+  The logs (the probe log, Monado's messages, vulkaninfo, the -vr-info output, ARMSX2's output and emulog.txt) are
+  uploaded as `frame-monado-logs-<sha>`. The step summary has the probe's phase table.
+
+**What passed.** Run 38327093646 on c29444e9be: the probe and -vr-info. Run 38328853148 on 6b5f3e0b32: all three steps.
+
+- Probe (run 38328853148):
+  - Runtime "Monado(XRT) by Collabora et al 'v25.1.0'", system "Monado: Simulated HMD", maxLayerCount 128, 320 x 240
+    per eye.
+  - The Vulkan device is llvmpipe, with one graphics queue, so the GS and the runtime would share it under the queue
+    lock. Swapchain format R8G8B8A8_SRGB.
+  - Session IDLE, READY, SYNCHRONIZED, VISIBLE, FOCUSED, 7 ms after xrCreateSession, and back through STOPPING and
+    EXITING at the end.
+  - Phases at 20 Hz (the null compositor's fixed rate), every frame rendered, no `xrEndFrame` error:
+
+    | Phase | What it submits | Frames | Rendered | xrEndFrame errors |
+    |---|---|---|---|---|
+    | A | one swapchain with arraySize 2 | 62 | 62 | 0 |
+    | B | one swapchain per eye | 62 | 62 | 0 |
+    | C | projection plus a quad | 61 | 61 | 0 |
+    | D | projection plus a cylinder | 61 | 61 | 0 |
+
+- -vr-info: the version line, the runtime, the headset (orientation and position tracking, 128 layers) and 49
+  instance extensions, `XR_KHR_vulkan_enable2` among them.
+- ARMSX2 session (run 38328853148), about 11 s from start to exit:
+  - "(VR) OpenXR runtime: Monado ...", "(VR) HMD: Monado: Simulated HMD", "(VR) XR session created (Vulkan, queue
+    family 0)", then the compositor and "(VR) VR session active".
+  - The session went READY to FOCUSED in 3 ms. The VR pacer submitted 20.0 frames/s at Monado's 20.0 Hz.
+  - On SIGTERM, ARMSX2 tore VR down with the GS device (compositor, action set, session) and exited 0.
+  - The longest queue-lock wait was 79 ms, in the first 5 s, and none was longer than 1 us after that. The 500 ms
+    limit was never reached.
+
+**What it does not cover.**
+- SteamVR's own behaviour: the FDM layer (#972), the array-layer bugs (#975), one session per instance (#989), and the
+  Frame controller profile. Monado offers no `XR_VALVE_frame_controller_interaction`. Only the Frame can answer these.
+- The null compositor shows nothing, so the colours are not checked. The test only checks that every frame is accepted.
+- The Frame's GPU and driver (Adreno, Turnip). lavapipe is a CPU driver with one queue, and its timings say nothing
+  about the Frame.
+- The game: CI has no BIOS or disc, so first person, the camera writes, per-eye stereo, the HUD, the menus and the
+  pouches never run here.
+- Controller input: the interaction profile each hand gets is reported in the log and the summary, not required. Run
+  38328853148 had no simulated controllers ("Left/Right hand profile: none").
+
+**How it is gated.** Both jobs keep job-level `continue-on-error`. A Monado failure, or gitlab.freedesktop.org being down
+on a cache miss, shows as a red `frame-monado` (or `monado`) job but never turns the run red, and nothing depends on
+these jobs. So read `frame-monado`'s own result. Inside the job, all three steps are required: the session step had
+step-level `continue-on-error` until it passed in run 38328853148, and the -vr-info step until it passed in run
+38327093646. Once the job has stayed green for a while, its job-level `continue-on-error` can go too.
+
+**Rounds.**
+- Run 38326488035 (ba4e0d47cb): the Monado build passed. The run was then cancelled by the workflow's concurrency group
+  when run 38327093646 was dispatched on the same branch.
+- Run 38327093646: the probe and -vr-info passed. The session step stopped at once: the runner sets `XDG_CONFIG_HOME`,
+  so `launch-outbreak-vr.sh` wrote its ini under `/home/runner/.config` instead of the test HOME. 6b5f3e0b32 runs the
+  launcher with the XDG variables unset, like the other checks.
+- Run 38328853148: all three steps passed.
+
+To run it on another Linux machine (x86_64 works too):
+
+    sudo build-monado.sh deps && build-monado.sh build ~/monado
+    frame-monado.sh <folder with outbreak-vr-frame-*.tar.zst> ~/monado <log folder> probe
+
+(`vr-info` and `session` the same way; `session` needs Xvfb.)
