@@ -202,7 +202,7 @@ The Steam Frame build is now also tested against a real OpenXR runtime in CI, wi
 - `frame-monado` runs the Frame bundle against Monado's simulated headset and its null compositor, which takes frames
   and shows nothing, on the CPU Vulkan driver (lavapipe).
 
-What passes (runs 38327093646 and 38328853148):
+What passes (runs 38328853148 and 38330771848; in the latter every check is required):
 
 - **frame-xrprobe, the whole session.** It creates its Vulkan device through `XR_KHR_vulkan_enable2` and gets the session
   to FOCUSED. All four colour phases (A: one swapchain with two layers, B: one swapchain per eye, C: a quad, D: a
@@ -213,6 +213,9 @@ What passes (runs 38327093646 and 38328853148):
     session and the compositor, and submits frames.
   - SIGTERM then shuts it down cleanly: VR is torn down with the GS device, and the exit code is 0.
   - No BIOS, disc or save is ever used.
+- **Controllers**: Monado's two simulated simple controllers are bound as `/interaction_profiles/khr/simple_controller`, in
+  the probe and in ARMSX2's VRInput, and their poses are tracked. They never press anything, so this checks only the
+  bindings and the poses.
 
 This catches a VR layer or probe change that breaks the OpenXR calls, the Vulkan bootstrap, the session, the frame loop
 or the teardown, before the build goes to the headset. It cannot check SteamVR's own quirks, the Frame's GPU, what the

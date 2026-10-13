@@ -497,16 +497,22 @@ against a real OpenXR runtime with no headset:
   The logs (the probe log, Monado's messages, vulkaninfo, the -vr-info output, ARMSX2's output and emulog.txt) are
   uploaded as `frame-monado-logs-<sha>`. The step summary has the probe's phase table.
 
-**What passed.** Run 38327093646 on c29444e9be: the probe and -vr-info. Run 38328853148 on 6b5f3e0b32: all three steps.
+**What passed.**
+- Run 38327093646 on c29444e9be: the probe and -vr-info.
+- Run 38328853148 on 6b5f3e0b32: all three steps.
+- Run 38330771848 on df2bb056b0: all three steps, every one required, now with the two simulated controllers.
 
-- Probe (run 38328853148):
+The details below are from runs 38328853148 and 38330771848; the numbers match to within a frame.
+
+- Probe:
   - Runtime "Monado(XRT) by Collabora et al 'v25.1.0'", system "Monado: Simulated HMD", maxLayerCount 128, 320 x 240
     per eye.
   - The Vulkan device is llvmpipe, with one graphics queue, so the GS and the runtime would share it under the queue
     lock. Swapchain format R8G8B8A8_SRGB.
-  - Session IDLE, READY, SYNCHRONIZED, VISIBLE, FOCUSED, 7 ms after xrCreateSession, and back through STOPPING and
+  - Session IDLE, READY, SYNCHRONIZED, VISIBLE, FOCUSED within 7 ms of xrCreateSession, and back through STOPPING and
     EXITING at the end.
-  - Phases at 20 Hz (the null compositor's fixed rate), every frame rendered, no `xrEndFrame` error:
+  - Phases at 20 Hz (the null compositor's fixed rate), every frame rendered, no `xrEndFrame` error (run 38328853148;
+    run 38330771848 had 62, 61, 61 and 61 frames):
 
     | Phase | What it submits | Frames | Rendered | xrEndFrame errors |
     |---|---|---|---|---|
@@ -515,15 +521,19 @@ against a real OpenXR runtime with no headset:
     | C | projection plus a quad | 61 | 61 | 0 |
     | D | projection plus a cylinder | 61 | 61 | 0 |
 
+  - With the simulated controllers (run 38330771848), Monado accepts the probe's Touch and simple bindings and binds
+    `/interaction_profiles/khr/simple_controller` to both hands. Both aim poses are tracked at the end of every phase.
 - -vr-info: the version line, the runtime, the headset (orientation and position tracking, 128 layers) and 49
   instance extensions, `XR_KHR_vulkan_enable2` among them.
-- ARMSX2 session (run 38328853148), about 11 s from start to exit:
+- ARMSX2 session, about 11 to 12 s from start to exit:
   - "(VR) OpenXR runtime: Monado ...", "(VR) HMD: Monado: Simulated HMD", "(VR) XR session created (Vulkan, queue
     family 0)", then the compositor and "(VR) VR session active".
   - The session went READY to FOCUSED in 3 ms. The VR pacer submitted 20.0 frames/s at Monado's 20.0 Hz.
+  - With the simulated controllers (run 38330771848), VRInput binds `/interaction_profiles/khr/simple_controller` to
+    both hands (the trigger as "Select"), and both controllers are reported live.
   - On SIGTERM, ARMSX2 tore VR down with the GS device (compositor, action set, session) and exited 0.
-  - The longest queue-lock wait was 79 ms, in the first 5 s, and none was longer than 1 us after that. The 500 ms
-    limit was never reached.
+  - The longest queue-lock wait was 79 ms, in the first 5 s, and 7 ms at most after that. The 500 ms limit was never
+    reached.
 
 **What it does not cover.**
 - SteamVR's own behaviour: the FDM layer (#972), the array-layer bugs (#975), one session per instance (#989), and the
@@ -533,8 +543,9 @@ against a real OpenXR runtime with no headset:
   about the Frame.
 - The game: CI has no BIOS or disc, so first person, the camera writes, per-eye stereo, the HUD, the menus and the
   pouches never run here.
-- Controller input: the interaction profile each hand gets is reported in the log and the summary, not required. Run
-  38328853148 had no simulated controllers ("Left/Right hand profile: none").
+- Controller input: Monado's simulated simple controllers never press anything, so only the bindings and the poses
+  are exercised. The profile each hand gets is reported in the log and the step summary, not required. (Run
+  38328853148 had no simulated controllers yet, so both hands were "none".)
 
 **How it is gated.** Both jobs keep job-level `continue-on-error`. A Monado failure, or gitlab.freedesktop.org being down
 on a cache miss, shows as a red `frame-monado` (or `monado`) job but never turns the run red, and nothing depends on
@@ -549,6 +560,7 @@ step-level `continue-on-error` until it passed in run 38328853148, and the -vr-i
   so `launch-outbreak-vr.sh` wrote its ini under `/home/runner/.config` instead of the test HOME. 6b5f3e0b32 runs the
   launcher with the XDG variables unset, like the other checks.
 - Run 38328853148: all three steps passed.
+- Run 38330771848 (df2bb056b0): all three steps passed with every step required and the simulated controllers on.
 
 To run it on another Linux machine (x86_64 works too):
 
